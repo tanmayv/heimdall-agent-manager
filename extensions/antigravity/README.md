@@ -9,11 +9,11 @@ Replacing legacy terminal screen-scraping (`source=pane_diff`), this extension n
 - **Tool Lifecycle & Telemetry**: Interception of tool executions (`PreToolUse`, `PostToolUse`) with deterministic step IDs (`step_<stepIdx>`).
 - **Subagent Hierarchies**: Tracking asynchronous subagents (`invoke_subagent`, `define_subagent`) and attributing child tool executions to their parent conversations.
 - **Unified File Diffs**: Automatic generation of unified diffs for mutating file tools (`write_to_file`, `replace_file_content`), capped at 64KB (`EXT_DIFF_MAX_BYTES`). Non-diffable and binary files are safely skipped.
-- **Interactive Permission Approvals**: In `permission_mode: ask`, destructive tool calls are gated in the Heimdall UI via `agent.extension.permission`, allowing users to approve or deny changes from the web interface.
+- **Interactive Permission Approvals**: In `permission_mode: ask`, every tool call except the known read-only native tools is gated in the Heimdall UI via `agent.extension.permission`, allowing users to approve or deny it from the web interface.
 
-All lifecycle hooks invoke:
+All lifecycle hooks invoke the env guard every Heimdall provider extension shares (`HOOK_COMMAND_GUARD` in `src/ctl/extension/hook.odin`):
 ```bash
-"$HEIMDALL_CTL_BIN" extension hook antigravity
+[ -x "${HEIMDALL_CTL_BIN:-}" ] || exit 0; exec "$HEIMDALL_CTL_BIN" extension hook antigravity
 ```
 which reads Antigravity's camelCase protojson payload from `stdin`, maps it to `ham.ext.v1`, and communicates with the local Heimdall Bridge socket.
 
@@ -60,7 +60,7 @@ The Heimdall extension **never** attempts to mutate `~/.gemini/hooks.json` or wr
 
 The extension is designed with strict **fail-open** semantics and is completely safe to install globally:
 
-1. **Unset Environment**: When Antigravity is run interactively outside Heimdall, `HEIMDALL_CTL_BIN` is unset. Hook processes exit 0 immediately with empty stdout.
+1. **Unset Environment**: When Antigravity is run interactively outside Heimdall, `HEIMDALL_CTL_BIN` is unset (or not executable). The guard exits 0 immediately with empty stdout.
 2. **Missing Bridge Credentials**: If `HEIMDALL_CTL_BIN` is set but `HEIMDALL_BRIDGE_ENDPOINT` or `HEIMDALL_AGENT_TOKEN` are empty or whitespace, `ham-ctl` exits 0 silently.
 3. **No Prompt Pollution**: Non-permission hooks strictly output empty stdout. Non-empty output in Antigravity hook handlers can inject unwanted tokens into the model context.
 
@@ -72,7 +72,7 @@ The extension is designed with strict **fail-open** semantics and is completely 
 | `PostInvocation` | 10s | Telemetry synchronization. | Empty stdout (`{}`) |
 | `PreToolUse` | 330s | Emits `tool.start`. If interactive permission is required, relays request to Bridge (`agent.extension.permission`) with a 300s budget. Allowlisted `ham-ctl` commands are auto-approved locally. | `{"decision": "allow"}` / `{"decision": "deny"}` / fallback `{"decision": "ask"}` |
 | `PostToolUse` | 30s | Emits `tool.end`. Generates unified file diffs for `write_to_file` and `replace_file_content`. | Empty stdout (`{}`) |
-| `Stop` | 10s | Emits `activity` (idle) and `session` (end). | `{"decision": "stop"}` or `{}` |
+| `Stop` | 10s | Emits `activity` (idle) for the main loop or `subagent.stop` for a child loop; agy has no session-end hook, so the session never ends here. | Empty stdout |
 
 ---
 
@@ -80,10 +80,10 @@ The extension is designed with strict **fail-open** semantics and is completely 
 
 Heimdall supports two permission modes for Antigravity agents:
 - **`permission_mode: auto`**: Tool calls execute without manual intervention.
-- **`permission_mode: ask`**: Potentially destructive tools (`run_command`, `write_to_file`, `replace_file_content`) pause and request approval.
+- **`permission_mode: ask`**: Every tool pauses and requests approval except the read-only native tools named in Heimdall's Antigravity captures (today only `view_file`). Subagent tools (`invoke_subagent`, `define_subagent`, `send_message`, `manage_task`) are gated too, because a child's tool calls carry no `permissionMode` and are not gated on their own. Network reads, MCP tools and tools Heimdall has no capture of fail safe to asking (`ANTIGRAVITY_UNGATED_TOOLS` in `src/ctl/extension/antigravity.odin` lists the names and their sources).
 
 ### Local Auto-Approval of Coordination Commands
-To prevent coordination deadlocks where an agent cannot answer its own blocker, `ham-ctl` command invocations (`chat`, `task`, `lease`, `verify`, `extension`, `agent start-success`) are verified by `is_ham_ctl_command` and **auto-approved locally** at once. These execute immediately without generating Bridge round-trips or UI blockers.
+To prevent coordination deadlocks where an agent cannot answer its own blocker, a lone `ham-ctl` invocation of an allowlisted verb through the issued `HEIMDALL_CTL_BIN` is verified by `is_ham_ctl_command` and **auto-approved locally** at once. This is the same rule Claude Code and Codex use (`hook_permission_self_approved` in `src/ctl/extension/hook.odin`); `shell run|serve`, `review` and connection-overriding flags always ask. These execute immediately without generating Bridge round-trips or UI blockers.
 
 ### Bridge Restart Resilience
 If the Heimdall Bridge restarts while an agent hook is waiting for approval:

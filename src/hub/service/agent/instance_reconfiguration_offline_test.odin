@@ -283,7 +283,7 @@ test_relaunch_send_failure_persists_failed_generation_and_allows_retry :: proc(t
 	if !testing.expect(t, found, err.message) do return
 	h.service.bridge_command_sink.send_runtime_command = relaunch_fail_send
 	auth := contracts.Auth_Context{kind=.Session, user_id=OFFLINE_RECONFIG_OWNER}
-	_, launched, launch_err := relaunch_instance(&h.service, auth, inst, inst.provider, inst.model)
+	_, launched, launch_err := relaunch_instance(&h.service, auth, inst, .Reconfiguration, inst.provider, inst.model)
 	testing.expect(t, !launched)
 	testing.expect_value(t, launch_err.code, domain.Error_Code.Bridge_Offline)
 	failed, loaded, read_err := iface.agent_get_instance(&h.agents, inst.agent_instance_id)
@@ -293,7 +293,7 @@ test_relaunch_send_failure_persists_failed_generation_and_allows_retry :: proc(t
 	testing.expect_value(t, failed.run_count, inst.run_count + 1)
 	testing.expect(t, failed.stopped_at != "")
 	h.service.bridge_command_sink.send_runtime_command = offline_reconfiguration_send
-	retried, sent, retry_err := relaunch_instance(&h.service, auth, failed, failed.provider, failed.model)
+	retried, sent, retry_err := relaunch_instance(&h.service, auth, failed, .Reconfiguration, failed.provider, failed.model)
 	testing.expect(t, sent, retry_err.message)
 	testing.expect_value(t, retried.run_count, failed.run_count + 1)
 	testing.expect_value(t, retried.runtime_status, "launching")

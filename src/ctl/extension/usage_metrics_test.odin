@@ -91,7 +91,7 @@ test_claude_tool_end_metrics_report_pre_clip_size :: proc(t: ^testing.T) {
 	big_out := strings.repeat("o", 20_000)
 	raw := fmt.tprintf(`{{"session_id":"s1","hook_event_name":"PostToolUse","tool_name":"Bash","tool_use_id":"tu1","tool_input":{{"command":"%s"}},"tool_response":{{"stdout":"%s","usage":{{"x":1}}}}}}`, big_in, big_out)
 	mapped, err := claude_map_hook(raw, UTS)
-	testing.expect_value(t, err, Claude_Error.None)
+	testing.expect_value(t, err, Hook_Error.None)
 	testing.expect_value(t, len(mapped.events), 1)
 	if len(mapped.events) != 1 do return
 	ev := parse_one(t, mapped.events[0])
@@ -130,7 +130,7 @@ test_codex_tool_end_metrics_include_dropped_image :: proc(t: ^testing.T) {
 	img := strings.repeat("A", 8_000)
 	raw := fmt.tprintf(`{{"session_id":"s1","hook_event_name":"PostToolUse","tool_name":"view_image","tool_use_id":"tu1","tool_input":{{"path":"/x.png"}},"tool_response":"%s"}}`, img)
 	mapped, err := codex_map_hook(raw, UTS)
-	testing.expect_value(t, err, Codex_Error.None)
+	testing.expect_value(t, err, Hook_Error.None)
 	if len(mapped.events) != 1 do return
 	ev := parse_one(t, mapped.events[0])
 	testing.expect(t, ev.has_metrics)
@@ -147,7 +147,7 @@ test_antigravity_tool_end_metrics :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	defer free_all(context.temp_allocator)
 	mapped, err := antigravity_map_hook(#load("testdata/antigravity/post_tool_use.json", string), UTS)
-	testing.expect_value(t, err, Antigravity_Error.None)
+	testing.expect_value(t, err, Hook_Error.None)
 	found := false
 	for e in mapped.events {
 		ev := parse_one(t, e)
@@ -303,7 +303,7 @@ test_claude_stop_and_tool_end_carry_usage :: proc(t: ^testing.T) {
 		#load("testdata/claude/post_tool_use_failure.json", string),
 	}) {
 		mapped, err := claude_map_hook(with_transcript(fixture, path), UTS)
-		testing.expect_value(t, err, Claude_Error.None)
+		testing.expect_value(t, err, Hook_Error.None)
 		if len(mapped.events) == 0 do continue
 		ev := parse_one(t, mapped.events[0])
 		testing.expect(t, ev.has_usage)
@@ -336,7 +336,7 @@ test_codex_stop_and_tool_end_carry_usage :: proc(t: ^testing.T) {
 		fmt.tprintf(`{{"session_id":"s1","hook_event_name":"PostToolUse","tool_name":"Bash","tool_use_id":"tu1","tool_input":{{"command":"ls"}},"tool_response":"a","transcript_path":"%s"}}`, path),
 	}) {
 		mapped, err := codex_map_hook(raw, UTS)
-		testing.expect_value(t, err, Codex_Error.None)
+		testing.expect_value(t, err, Hook_Error.None)
 		if len(mapped.events) != 1 do continue
 		ev := parse_one(t, mapped.events[0])
 		testing.expect(t, ev.has_usage)
@@ -473,13 +473,13 @@ test_usage_source_table_covers_readers_and_antigravity_has_none :: proc(t: ^test
 		testing.expect_value(t, u.source, c.source)
 
 		// Reader present but transcript unreadable: counter instead of usage.
-		eb := ext_event_begin("activity", UTS, val.(json.Object), c.provider, "x")
+		eb := ext_event_begin(.Activity, UTS, val.(json.Object), c.provider, "x")
 		bad, _ := json.parse_string(fmt.tprintf(`{{"session_id":"s","transcript_path":"%s"}}`, missing))
 		ext_event_finish_usage(&eb, c.provider, bad.(json.Object), true)
 		ev := parse_one(t, ext_event_end(&eb, "{}"))
 		testing.expect(t, !ev.has_usage && ev.usage_unavailable)
 		// want_usage=false emits nothing.
-		eb2 := ext_event_begin("activity", UTS, val.(json.Object), c.provider, "x")
+		eb2 := ext_event_begin(.Activity, UTS, val.(json.Object), c.provider, "x")
 		ext_event_finish_usage(&eb2, c.provider, bad.(json.Object), false)
 		ev2 := parse_one(t, ext_event_end(&eb2, "{}"))
 		testing.expect(t, !ev2.has_usage && !ev2.usage_unavailable)
@@ -487,7 +487,7 @@ test_usage_source_table_covers_readers_and_antigravity_has_none :: proc(t: ^test
 	_, has := usage_reader_for(ANTIGRAVITY_PROVIDER)
 	testing.expect(t, !has, "antigravity has no usage reader")
 	root, _ := json.parse_string(`{"session_id":"s","transcript_path":"/x"}`)
-	eb := ext_event_begin("activity", UTS, root.(json.Object), ANTIGRAVITY_PROVIDER, "x")
+	eb := ext_event_begin(.Activity, UTS, root.(json.Object), ANTIGRAVITY_PROVIDER, "x")
 	ext_event_finish_usage(&eb, ANTIGRAVITY_PROVIDER, root.(json.Object), true)
 	ev := parse_one(t, ext_event_end(&eb, "{}"))
 	testing.expect(t, !ev.has_usage && !ev.usage_unavailable)

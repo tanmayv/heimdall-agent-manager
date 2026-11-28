@@ -42,7 +42,16 @@ ACP_Protocol_Driver :: struct {
     // this runtime's session; ok=false when it carries none. usage.source is
     // a constant. Called for every notification before `notification`.
     usage: proc(r: ^ACP_Runtime, method, params: string) -> (usage: contracts.Ext_Usage, ok: bool),
+    // Starts a native context compaction as a turn of its own on an idle
+    // session (phase "ready"); the turn ends like any other, through the
+    // driver's normal completion. false: nothing was sent. nil: the protocol
+    // cannot compact.
+    compact: proc(r: ^ACP_Runtime) -> bool,
 }
+
+// Input identity of a compaction turn: not a hub message, never reported as
+// a delivery, remembered by the inbox like any finished input.
+ACP_COMPACT_INPUT_PREFIX :: "compact_"
 
 // Later: the turn will accept steering once the protocol has admitted it (e.g.
 // a native turn id is still pending), so a held input waits instead of
@@ -99,6 +108,7 @@ acp_protocol_acp_driver := ACP_Protocol_Driver{
     permission_result = acp_driver_acp_permission_result,
     permission_relay = acp_driver_acp_permission_relay,
     usage = acp_driver_acp_usage,
+    compact = acp_driver_acp_compact,
 }
 
 acp_protocol_driver :: proc(protocol: contracts.ACP_Protocol) -> ^ACP_Protocol_Driver {

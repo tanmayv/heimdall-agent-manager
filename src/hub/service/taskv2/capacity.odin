@@ -15,7 +15,7 @@ import agent "odin_test:hub/service/agent"
 
 // STOP_REASON_CAPACITY_YIELD: a lease-free grace instance stopped so a pending
 // review of another agent can take its chain slot (REQ-SCHED-34).
-STOP_REASON_CAPACITY_YIELD :: "capacity_yield"
+STOP_REASON_CAPACITY_YIELD :: agent.STOP_CAPACITY_YIELD
 
 // chain_cap_reserve_forced_zero: test hook. When set, the chain's
 // review_reserve is treated as 0, so a test can show the cap deadlocks without

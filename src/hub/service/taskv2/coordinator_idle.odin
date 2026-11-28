@@ -33,8 +33,8 @@ import agent "odin_test:hub/service/agent"
 // called after the unit of work commits, with a reason that does not start
 // with "user" so stopped_by stays clear and the existing wakes still apply.
 
-COORDINATOR_IDLE_REASON_COMPLETED :: "coordinator_idle_completed"
-COORDINATOR_IDLE_REASON           :: "coordinator_idle"
+COORDINATOR_IDLE_REASON_COMPLETED :: agent.STOP_COORDINATOR_IDLE_DONE
+COORDINATOR_IDLE_REASON           :: agent.STOP_COORDINATOR_IDLE
 // A guarded fire retries after this delay.
 COORDINATOR_IDLE_RETRY_SECONDS    :: 60
 // A coordinator that (re)started this recently is never idle-stopped yet: a
@@ -45,7 +45,7 @@ COORDINATOR_IDLE_START_GRACE_SECONDS :: 10 * 60
 Coordinator_Idle_Stop :: struct {
 	owner:       domain.User_ID,
 	instance_id: string,
-	reason:      string,
+	reason:      agent.Stop_Reason,
 	kind:        Timer_Kind,
 	armed:       string,
 }
@@ -258,7 +258,7 @@ coordinator_idle_stop_after_commit :: proc(svc: ^Service, stop: Coordinator_Idle
 	ok := false
 	msg := ""
 	if svc.coordinator_stop != nil {
-		ok = svc.coordinator_stop(svc.coordinator_stop_ctx, stop.owner, stop.instance_id, stop.reason)
+		ok = svc.coordinator_stop(svc.coordinator_stop_ctx, stop.owner, stop.instance_id, string(stop.reason))
 	} else if svc.agent_service != nil {
 		row, stopped, err := agent.stop_instance_confirmed(svc.agent_service, contracts.Auth_Context{kind = .Internal_User, user_id = string(stop.owner)}, stop.instance_id, agent.Stop_Instance_Input{reason = stop.reason})
 		defer domain.agent_instance_destroy(&row)

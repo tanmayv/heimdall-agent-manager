@@ -232,7 +232,7 @@ grant_attempt_in_uow :: proc(svc: ^Service, u: ^Uow, req: Grant_Request, stoppin
 			return {}, false, domain.domain_error(.Conflict, "instance changed before process verification")
 		}
 		domain.agent_instance_destroy(&current)
-		ticket, start_err := agent.start_begin(svc.agent_service, contracts.Auth_Context{user_id=string(task.owner_user_id), kind=.Internal_User}, inst.agent_instance_id, {ref=lease.lease_id, if_live=policy, expected=&inst, process_fact=fact})
+		ticket, start_err := agent.start_begin(svc.agent_service, contracts.Auth_Context{user_id=string(task.owner_user_id), kind=.Internal_User}, inst.agent_instance_id, {ref=lease.lease_id, if_live=policy, reason=.Lease_Wake, expected=&inst, process_fact=fact})
 		if start_err.code != .None do return {}, false, start_err
 		start_ticket = new(agent.Start_Ticket)
 		start_ticket^ = ticket
@@ -374,13 +374,14 @@ expiry_stops_holder :: proc(reason: string) -> bool {
 
 // Stop intents the lease system records (agent_instances.stop_reason). A new
 // grant to the instance supersedes them; a user stop is never one of them.
-STOP_REASON_TASK_COMPLETED :: "task_completed"
-STOP_REASON_REVIEW_POSTED :: "review_posted"
-STOP_REASON_IDLE_TTL :: "idle_ttl"
-STOP_REASON_HANDOFF :: "lease_handoff"
-STOP_REASON_INVALIDATED :: "lease_invalidated"
+STOP_REASON_TASK_COMPLETED :: agent.STOP_TASK_COMPLETED
+STOP_REASON_REVIEW_POSTED :: agent.STOP_REVIEW_POSTED
+STOP_REASON_IDLE_TTL :: agent.STOP_IDLE_TTL
+STOP_REASON_HANDOFF :: agent.STOP_LEASE_HANDOFF
+STOP_REASON_INVALIDATED :: agent.STOP_LEASE_INVALIDATED
 
-lease_stop_reason :: proc(reason: string) -> bool {
+lease_stop_reason :: proc(stored: string) -> bool {
+	reason := agent.Stop_Reason(stored)
 	return reason == STOP_REASON_TASK_COMPLETED || reason == STOP_REASON_REVIEW_POSTED || reason == STOP_REASON_IDLE_TTL || reason == STOP_REASON_CAPACITY_YIELD || reason == STOP_REASON_HANDOFF || reason == STOP_REASON_INVALIDATED
 }
 
@@ -390,12 +391,12 @@ lease_stop_reason :: proc(reason: string) -> bool {
 // the LIFE-6 fence). An instance that is not running needs no stop, unless
 // `reported_live`: its bridge has just reported it active, which outranks the
 // stored status (still `unreachable` from the disconnect during on_bridge_hello).
-stop_instance_in_uow :: proc(svc: ^Service, u: ^Uow, inst: domain.Agent_Instance, chain_id: string, reason: string, reported_live := false) -> (bool, domain.Domain_Error) {
+stop_instance_in_uow :: proc(svc: ^Service, u: ^Uow, inst: domain.Agent_Instance, chain_id: string, reason: agent.Stop_Reason, reported_live := false) -> (bool, domain.Domain_Error) {
 	if !reported_live {
 		fact := match_process_fact(svc, nil, inst, domain.Task_Chain_ID(chain_id))
 		if fact.state == .Exited || fact.reason == .never_started do return true, {}
 	}
-	if recorded, err := iface.agent_set_stop_reason(svc.agents, inst.agent_instance_id, reason); !recorded {
+	if recorded, err := iface.agent_set_stop_reason(svc.agents, inst.agent_instance_id, string(reason)); !recorded {
 		if err.code == .None do return false, domain.domain_error(.Internal_Error, "failed to record stop intent")
 		return false, err
 	}

@@ -46,7 +46,7 @@ test_review_post_stops_reviewer_that_still_owes :: proc(t: ^testing.T) {
 	testing.expect(t, !regranted, "nothing granted while the bridge is down")
 	r_gen := iface_run_count(fx, "inst_r1")
 	stopped_inst, _, _ := iface.agent_get_instance(&fx.agents, "inst_r1")
-	testing.expect_value(t, stopped_inst.stop_reason, STOP_REASON_REVIEW_POSTED)
+	testing.expect_value(t, stopped_inst.stop_reason, string(STOP_REASON_REVIEW_POSTED))
 	// the bridge returns: the owed review is granted to the same reviewer
 	set_bridge_status(fx, "br_1", true)
 	fixture_advance(fx, REMATCH_DELAYS_SECONDS[2] + 1)

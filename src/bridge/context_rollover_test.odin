@@ -24,8 +24,11 @@ Roll_Recorder :: struct {
 	restart_generations: [dynamic]int,
 	alerts:     [dynamic]string, // "<instance>|<coordinator>|<text>"
 	idles:      [dynamic]string, // "<instance>|<source>"
+	compacts:   [dynamic]string,
+	handoffs:   [dynamic]string, // "<instance>|<message_id>"
 	persist_ok: bool,
 	restart_ok: bool,
+	compact_ok: bool,
 }
 
 @(private = "file")
@@ -34,7 +37,7 @@ roll_rec: Roll_Recorder
 @(private = "file")
 roll_begin :: proc() {
 	sync.mutex_lock(&roll_test_mutex)
-	roll_rec = Roll_Recorder{persist_ok = true, restart_ok = true}
+	roll_rec = Roll_Recorder{persist_ok = true, restart_ok = true, compact_ok = true}
 	bridge_rollover_sync_effects = true
 	bridge_rollover_effects = Bridge_Rollover_Effects{
 		deliver_line = proc(id, text: string) -> bool {
@@ -58,6 +61,12 @@ roll_begin :: proc() {
 		alert = proc(id, coordinator, text: string) {
 			append(&roll_rec.alerts, strings.concatenate({id, "|", coordinator, "|", text}, context.temp_allocator))
 		},
+		compact = proc(id: string) -> bool {
+			append(&roll_rec.compacts, strings.clone(id, context.temp_allocator)); return roll_rec.compact_ok
+		},
+		deliver_handoff = proc(id, message_id: string) -> bool {
+			append(&roll_rec.handoffs, strings.concatenate({id, "|", message_id}, context.temp_allocator)); return true
+		},
 	}
 }
 
@@ -68,7 +77,7 @@ roll_end :: proc(ids: ..string) {
 	bridge_rollover_sync_effects = false
 	delete(roll_rec.requests); delete(roll_rec.notices); delete(roll_rec.persists)
 	delete(roll_rec.restarts); delete(roll_rec.alerts); delete(roll_rec.idles)
-	delete(roll_rec.restart_generations)
+	delete(roll_rec.restart_generations); delete(roll_rec.compacts); delete(roll_rec.handoffs)
 	roll_rec = {}
 	sync.mutex_unlock(&roll_test_mutex)
 }
@@ -144,6 +153,10 @@ test_rollover_full_cycle_transitions :: proc(t: ^testing.T) {
 	testing.expect_value(t, bridge_rollover_phase_of(id), Bridge_Rollover_Phase.Normal)
 	testing.expect_value(t, bridge_rollover_launch_prompt_line(id), "")
 	testing.expect_value(t, len(roll_rec.alerts), 0)
+	// R7 N1: the saved handoff reaches the new session as an unread input.
+	testing.expect_value(t, len(roll_rec.handoffs), 1)
+	if len(roll_rec.handoffs) == 1 do testing.expect_value(t, roll_rec.handoffs[0], strings.concatenate({id, "|msg_pctx_1"}, context.temp_allocator))
+	testing.expect_value(t, len(roll_rec.compacts), 0)
 
 	// A second rollover gets a new request id.
 	roll_event(id, 90, true, now + 5 + BRIDGE_ROLLOVER_COOLDOWN_MS)
@@ -782,4 +795,124 @@ test_rollover_refused_stop_fence_releases_notices_without_retry :: proc(t: ^test
 	roll_tick(5)
 	testing.expect_value(t,len(roll_rec.restarts),1)
 	testing.expect_value(t,bridge_rollover_launch_prompt_line(id),"")
+}
+
+@(private = "file")
+roll_set_transport :: proc(id, transport: string) {
+	bridge_runtime_mark_start_success(id)
+	sync.mutex_lock(&bridge_runtime_mutex)
+	for &inst in bridge_runtime_instances do if inst.agent_instance_id == id do inst.runtime_transport = transport
+	sync.mutex_unlock(&bridge_runtime_mutex)
+}
+
+// R7: a runtime that compacts natively is compacted at a trusted idle: no
+// handoff request, no restart, inbound never held, cooldown afterwards; a
+// refused compaction (the agent turned busy) waits for the next idle.
+@(test)
+test_rollover_compacting_runtime_compacts_at_idle_without_restart :: proc(t: ^testing.T) {
+	roll_begin()
+	id := "inst_test_roll_compact"
+	defer roll_end(id)
+	compact_event :: proc(id: string, pct: i64, idle: bool, now: i64) {
+		bridge_rollover_run(bridge_rollover_decide_event(id, pct, idle, 80, 200_000, now, can_compact = true))
+	}
+	// The compact result is stamped with the bridge clock (cooldown).
+	now := bridge_runtime_now_ms()
+	compact_event(id, 85, false, now)
+	testing.expect_value(t, bridge_rollover_phase_of(id), Bridge_Rollover_Phase.Pending)
+	testing.expect_value(t, len(roll_rec.compacts), 0) // never mid-turn
+	// Refused (busy): back to pending, nothing held, nothing typed.
+	roll_rec.compact_ok = false
+	compact_event(id, 85, true, now + 1)
+	testing.expect_value(t, len(roll_rec.compacts), 1)
+	testing.expect_value(t, bridge_rollover_phase_of(id), Bridge_Rollover_Phase.Pending)
+	roll_rec.compact_ok = true
+	compact_event(id, 86, true, now + 2)
+	testing.expect_value(t, len(roll_rec.compacts), 2)
+	testing.expect_value(t, roll_rec.compacts[1], id)
+	testing.expect_value(t, bridge_rollover_phase_of(id), Bridge_Rollover_Phase.Normal)
+	testing.expect_value(t, len(roll_rec.requests), 0)
+	testing.expect_value(t, len(roll_rec.restarts), 0)
+	testing.expect_value(t, len(roll_rec.persists), 0)
+	testing.expect_value(t, len(roll_rec.handoffs), 0)
+	testing.expect_value(t, bridge_rollover_filter_activity(id, "idle"), "idle")
+	testing.expect(t, !bridge_rollover_queue_notice(id, "User"), "compaction never holds inbound")
+	testing.expect_value(t, bridge_rollover_launch_prompt_line(id), "")
+	// Cooldown: the usage still reads high until the next report; no repeat.
+	compact_event(id, 90, true, now + 3)
+	testing.expect_value(t, len(roll_rec.compacts), 2)
+	compact_event(id, 90, true, now + 3 + BRIDGE_ROLLOVER_COOLDOWN_MS)
+	testing.expect_value(t, len(roll_rec.compacts), 3)	// A compact action that never reports back does not leave the instance
+	// stuck: the tick returns it to pending.
+	later := now + 4 + 2 * BRIDGE_ROLLOVER_COOLDOWN_MS
+	lost := bridge_rollover_decide_event(id, 90, true, 80, 200_000, later, can_compact = true)
+	bridge_rollover_actions_destroy(lost)
+	testing.expect_value(t, bridge_rollover_phase_of(id), Bridge_Rollover_Phase.Compacting)
+	roll_tick(later + BRIDGE_ROLLOVER_REQUEST_TIMEOUT_MS)
+	testing.expect_value(t, bridge_rollover_phase_of(id), Bridge_Rollover_Phase.Pending)
+}
+
+// R7: the runtime owns the context policy. An ACP runtime's own idle report
+// (source "acp") compacts it; hooks of an ACP child (it loads the user's
+// heimdall plugin) neither fold usage nor start the PTY rollover.
+@(test)
+test_rollover_acp_runtime_ignores_hooks_and_compacts_on_its_own_idle :: proc(t: ^testing.T) {
+	roll_begin()
+	id := "inst_test_roll_acp_hooks"
+	defer roll_end(id)
+	defer bridge_runtime_set_status(id, "stopped", "idle")
+	roll_set_transport(id, acp_agent_runtime.transport)
+	testing.expect(t, bridge_runtime_can_compact(id))
+	testing.expect(t, !bridge_runtime_context_accepts(id, .Extension))
+	testing.expect(t, !bridge_runtime_context_accepts(id, .Terminal))
+	rec := Bridge_Local_Agent_Token_Record{agent_instance_id = id, instance_token = "itok", role = .Agent}
+	now := bridge_runtime_now_ms()
+	head := `{"schema":"ham.ext.v1","provider":"claude","ext_version":"0.1.0","ts":"2026-11-02T06:00:00Z","session_id":"sess-acp",`
+	for raw in ([]string{
+		strings.concatenate({head, `"event":"tool.end","tool":{"name":"Read","use_id":"tu_1"},"usage":{"context_tokens":190000,"source":"claude_transcript"}}`}, context.temp_allocator),
+		strings.concatenate({head, `"event":"activity","payload":{"state":"idle"}}`}, context.temp_allocator),
+	}) {
+		res := bridge_ext_ingest(rec, raw, now)
+		testing.expect_value(t, res.accepted, 1) // hooks still report activity and tools
+		bridge_ext_ingest_result_destroy(&res)
+	}
+	_, _, pct := bridge_ext_context_window_for(id)
+	testing.expect_value(t, pct, -1)
+	bridge_rollover_on_activity(id, "idle", "pane_diff", now + 1)
+	testing.expect_value(t, bridge_rollover_phase_of(id), Bridge_Rollover_Phase.Normal)
+	testing.expect_value(t, len(roll_rec.requests), 0)
+
+	// Protocol usage past rollover_pct: pending; the runtime's idle compacts.
+	bridge_ext_usage_observe(id, {has_usage = true, usage = {context_tokens = 180000, has_context_window = true, context_window = 200000, source = ACP_USAGE_SOURCE}}, now + 2)
+	testing.expect_value(t, bridge_rollover_phase_of(id), Bridge_Rollover_Phase.Pending)
+	// "acp" activity is not a context signal; the runtime's turn idle is.
+	bridge_rollover_on_activity(id, "idle", "acp", now + 3)
+	testing.expect_value(t, len(roll_rec.compacts), 0)
+	acp_turn := ACP_Runtime{instance = id}
+	acp_runtime_turn_idle(&acp_turn)
+	testing.expect_value(t, len(roll_rec.compacts), 1)
+	testing.expect_value(t, len(roll_rec.requests), 0)
+	testing.expect_value(t, len(roll_rec.restarts), 0)
+	testing.expect_value(t, bridge_rollover_phase_of(id), Bridge_Rollover_Phase.Normal)
+}
+
+// R7: a terminal runtime takes hooks and the screen detector, never protocol
+// usage, and rolls over (it cannot compact).
+@(test)
+test_rollover_pty_runtime_context_sources :: proc(t: ^testing.T) {
+	roll_begin()
+	id := "inst_test_roll_pty_sources"
+	defer roll_end(id)
+	defer bridge_runtime_set_status(id, "stopped", "idle")
+	roll_set_transport(id, pty_agent_runtime.transport)
+	testing.expect(t, !bridge_runtime_can_compact(id))
+	testing.expect(t, bridge_runtime_context_accepts(id, .Extension) && bridge_runtime_context_accepts(id, .Terminal))
+	testing.expect(t, !bridge_runtime_context_accepts(id, .Protocol))
+	now := bridge_runtime_now_ms()
+	bridge_ext_usage_observe(id, {has_usage = true, usage = {context_tokens = 180000, has_context_window = true, context_window = 200000, source = ACP_USAGE_SOURCE}}, now)
+	testing.expect_value(t, bridge_rollover_phase_of(id), Bridge_Rollover_Phase.Normal)
+	bridge_context_observe(id, .Protocol, true, now + 1)
+	testing.expect_value(t, len(roll_rec.compacts), 0)
+	// A handoff request is never typed into an agent that is not running.
+	testing.expect(t, !pty_agent_handoff_request("inst_test_roll_pty_absent", "x"))
 }

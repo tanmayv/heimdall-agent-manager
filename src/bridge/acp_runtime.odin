@@ -354,6 +354,12 @@ acp_runtime_work :: proc(data: rawptr, c: ^ACP_RPC_Client, argument: string) -> 
         // Cancel is a notification and the original prompt owns the response.
         acp_runtime_driver(r).cancel(r)
         return acp_rpc_checkpoint(c)
+    case "compact":
+        // Never mid-turn: only an idle, ready session with nothing exiting.
+        if !acp_runtime_current(r) || !r.d.ready || r.d.error != "" || r.d.exit_pending || r.d.stopped || r.d.phase != "ready" || acp_send_now_active(r) do return false
+        driver := acp_runtime_driver(r)
+        if driver.compact == nil || !driver.compact(r) do return false
+        return acp_rpc_checkpoint(c)
     case "interrupt":
         if acp_send_now_active(r) && !r.d.cancelling do acp_send_now_set_state(r, "cancelling")
         if !acp_runtime_current(r) || !r.d.ready || r.d.error != "" do return false
@@ -362,6 +368,13 @@ acp_runtime_work :: proc(data: rawptr, c: ^ACP_RPC_Client, argument: string) -> 
         return acp_runtime_driver(r).cancel(r)
     }
     return acp_inbox_accept(r, c, argument)
+}
+
+// A finished turn is the runtime's trusted idle: report it, and feed the
+// instance's context policy with the runtime's own signal source.
+acp_runtime_turn_idle :: proc(r: ^ACP_Runtime) {
+    bridge_runtime_note_agent_activity(r.instance, "idle", "acp")
+    bridge_context_observe(r.instance, .Protocol, true, bridge_runtime_now_ms())
 }
 
 acp_runtime_command :: proc(instance, argument: string) -> bool {

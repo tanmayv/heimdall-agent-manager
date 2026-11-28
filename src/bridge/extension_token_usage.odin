@@ -106,7 +106,7 @@ bridge_ext_token_usage_apply :: proc(u: ^Bridge_Ext_Token_Usage, ev: contracts.E
 
 	if ev.kind == .Hello {
 		supported := false
-		for c in ev.capabilities do if c == "usage" do supported = true
+		for c in ev.capabilities do if c == contracts.ext_capability_name(.Usage) do supported = true
 		if !u.has_usage_cap || u.usage_supported != supported do changed = true
 		u.has_usage_cap, u.usage_supported = true, supported
 	}

@@ -1578,7 +1578,37 @@ ctl_agentmode_task_update_params :: proc(tid: string, args: []string) -> string 
 	return json_object_from_slice(fields[:])
 }
 
+// ctl_chat_send_reply_to validates --reply-to <message_id>: the user message a
+// reply answers (overrides the Hub's consumed-input reply origin). Only a reply
+// to the user takes it. Returns ("", "") when absent.
+ctl_chat_send_reply_to :: proc(to: string, args: []string) -> (id: string, invalid: string) {
+	if !has_flag(args, "--reply-to") do return "", ""
+	id = strings.trim_space(option_value(args, "--reply-to", ""))
+	if id == "" || strings.has_prefix(id, "--") do return "", "--reply-to requires a message id"
+	if to != "user" do return "", "--reply-to applies only to --to user"
+	return id, ""
+}
+
+// ctl_json_object_add_field appends one encoded field to a JSON object text.
+ctl_json_object_add_field :: proc(object, field: string) -> string {
+	trimmed := strings.trim_space(object)
+	if len(trimmed) < 2 || trimmed[len(trimmed)-1] != '}' do return object
+	if strings.trim_space(trimmed[1:len(trimmed)-1]) == "" do return strings.concatenate({"{", field, "}"})
+	return strings.concatenate({trimmed[:len(trimmed)-1], ",", field, "}"})
+}
+
 ctl_agentmode_chat_send_params :: proc(to: string, body: string, args: []string) -> string {
+	reply_to, reply_invalid := ctl_chat_send_reply_to(to, args)
+	if reply_invalid != "" {
+		fmt.println(json_object(json_kv_raw("ok", "false"), json_kv("message", reply_invalid)))
+		os.exit(1)
+	}
+	params := ctl_agentmode_chat_send_params_body(to, body, args)
+	if reply_to != "" do params = ctl_json_object_add_field(params, json_kv("reply_to", reply_to))
+	return params
+}
+
+ctl_agentmode_chat_send_params_body :: proc(to: string, body: string, args: []string) -> string {
 	if has_flag(args, "--questions-file") {
 		file := option_value(args, "--questions-file", "")
 		if file == "" || strings.has_prefix(file, "--") {
@@ -2290,6 +2320,8 @@ print_help_chat :: proc() {
 	fmt.println("      [--actions <a,b> | --action <act>]")
 	fmt.println("      [--artifact <art-id>]...  Attach existing artifacts (repeatable or comma-separated; e.g. a voice reply).")
 	fmt.println("      [--questions-file <path.json>]  Version 1 grouped questions (user only; cannot combine with flat options).")
+	fmt.println("      [--reply-to <message-id>]  The user message this reply answers (user only). Default: the messages")
+	fmt.println("                                 you consumed since your previous reply.")
 	fmt.println("      Question text and option labels are vault-encrypted; each question also accepts custom text.")
 	fmt.println("      --to is REQUIRED: `user` for the bound user, or an agent-instance-id.")
 	fmt.println("  set-title <title>                                              DEPRECATED: conversation titles are unused;")

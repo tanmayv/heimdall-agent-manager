@@ -55,6 +55,32 @@ Ext_Event_Kind :: enum {
 	Compaction,
 }
 
+// Ext_Capability is one feature a provider extension declares in its hello
+// (payload.capabilities). Adapters declare an Ext_Capabilities set and the hello
+// serializer writes the names in enum order; consumers compare names through
+// ext_capability_name so producer and consumer share one vocabulary.
+Ext_Capability :: enum {
+	Activity,
+	Subagents,
+	Permissions,
+	File_Edits,
+	Session_Id,
+	Usage, // the provider emits usage.context_tokens
+}
+Ext_Capabilities :: bit_set[Ext_Capability]
+
+ext_capability_name :: proc(c: Ext_Capability) -> string {
+	switch c {
+	case .Activity:    return "activity"
+	case .Subagents:   return "subagents"
+	case .Permissions: return "permissions"
+	case .File_Edits:  return "file_edits"
+	case .Session_Id:  return "session_id"
+	case .Usage:       return "usage"
+	}
+	return ""
+}
+
 Ext_Error :: enum {
 	None,
 	Too_Large,

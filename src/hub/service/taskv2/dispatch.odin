@@ -219,7 +219,7 @@ start_blocked_task_instance :: proc(svc: ^Service, auth: contracts.Auth_Context,
 		start_err = domain.domain_error(.Internal_Error, "agent launch service is unavailable")
 	} else {
 		row: domain.Agent_Instance
-		row, started, start_err = agent.start_instance_confirmed(svc.agent_service, auth, coord.agent_instance_id)
+		row, started, start_err = agent.start_instance_confirmed(svc.agent_service, auth, coord.agent_instance_id, .Coordinator_Dispatch)
 		domain.agent_instance_destroy(&row)
 	}
 	u, ok, err := begin_uow(svc)

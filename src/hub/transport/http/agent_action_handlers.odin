@@ -255,7 +255,7 @@ agent_action_chat_send_to_user_handler :: proc(ctx: rawptr, req: Request) -> Res
 	} else if meta_str := json_string(params, "metadata_json"); meta_str != "" {
 		metadata_json = meta_str
 	}
-	msg, saved, err := content_service.send_agent_message(h.content, auth, inst.agent_instance_id, content_service.Message_Input{body = json_string(params, "body"), artifact_ids_json = json_array_optional(params, "artifact_ids"), message_type = json_string(params, "message_type"), metadata_json = metadata_json})
+	msg, saved, err := content_service.send_agent_message(h.content, auth, inst.agent_instance_id, content_service.Message_Input{body = json_string(params, "body"), artifact_ids_json = json_array_optional(params, "artifact_ids"), message_type = json_string(params, "message_type"), metadata_json = metadata_json, reply_to_message_id = strings.trim_space(json_string(params, "reply_to"))})
 	if !saved do return respond_error(err, req.request_id)
 	// Notify the human's UI so it can toast + raise an OS notification. This is a
 	// metadata event with a SHORT body preview (<=140 chars) — the full body is
@@ -393,6 +393,7 @@ agent_action_chat_previous_context_handler :: proc(ctx: rawptr, req: Request) ->
 		request_id = json_string(params, "request_id"),
 		body = json_string(params, "body"),
 		metadata_json = json_object_raw(params, "metadata"),
+		written_run_count = inst.run_count,
 	}
 	msg, created, err := content_service.store_previous_context(h.content, auth, inst.agent_instance_id, input)
 	if err.code != .None do return respond_error(err, req.request_id)
@@ -673,8 +674,15 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 		acp_agent_unread=inst.runtime_transport == "acp" && !bridge_input && target_id == "",
 	}
 
-	rows, err := content_service.list_agent_inbox_messages(h.content, auth, filter)
+	listed, err := content_service.list_agent_inbox_messages(h.content, auth, filter)
 	if err.code != .None do return respond_error(err, req.request_id)
+	// A rollover handoff is for the next process: the run that wrote it never
+	// gets it back, so its reads (and an ACP input drain) leave it unread.
+	rows := make([dynamic]domain.Chat_Message, 0, len(listed), context.temp_allocator)
+	for row in listed {
+		if effective_instance_id == inst.agent_instance_id && content_service.previous_context_hidden_from_run(row, inst.run_count) do continue
+		append(&rows, row)
+	}
 	
 	// In the ACP agent unread view every returned row is unread for the agent.
 	acp_unread_view := filter.acp_agent_unread && unread_only
@@ -714,6 +722,15 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 	// input drain is admission only and never counts).
 	acp_read: []string
 	if mark_read && !bridge_input && target_id == "" do acp_read = acp_note_agent_read_rows(h, auth, inst, rows[:])
+	// Reply origin (R7): only the agent's own marking read of its unread inbox
+	// consumes input; --include-read, transcript and mark_read=false do not.
+	if mark_read && unread_only && !bridge_input && target_id == "" && len(rows) > 0 {
+		consumed := make([dynamic]string, context.temp_allocator)
+		// A rollover handoff is the agent's own note, not input awaiting a reply.
+		for row in rows do if row.direction == "user_to_agent" && row.message_type != content_service.MESSAGE_TYPE_PREVIOUS_CONTEXT do append(&consumed, row.message_id)
+		// The read already committed; a failure here only loses reply routing.
+		if cerr := content_service.note_agent_consumed(h.content, auth, inst.agent_instance_id, consumed[:], domain.INPUT_CONSUMED_READ); cerr.code != .None do fmt.println("reply origin consumption failed", inst.agent_instance_id, cerr.message)
+	}
 	unread_count_after := unread_count_before - marked_count
 	if acp_unread_view {
 		// Count each row once: it stays unread unless the legacy mark or the
@@ -736,7 +753,7 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 	next := ""
 	for msg, i in rows { if i > 0 do strings.write_byte(&b, ','); write_message_json(&b, msg, h.content); next = msg.created_at }
 	
-	fmt.sbprintf(&b, "],\"page\":{{\"limit\":%d,\"next_cursor\":\"%s\",\"has_more\":%t}}", limit, next, len(rows) >= limit)
+	fmt.sbprintf(&b, "],\"page\":{{\"limit\":%d,\"next_cursor\":\"%s\",\"has_more\":%t}}", limit, next, len(listed) >= limit)
 	
 	fmt.sbprintf(&b, ",\"read\":{{\"marked\":%t,\"marked_count\":%d,\"through_message_id\":\"%s\",\"through_created_at\":\"%s\"}}}}",
 	    mark_read, marked_count, through_message_id, through_created_at)

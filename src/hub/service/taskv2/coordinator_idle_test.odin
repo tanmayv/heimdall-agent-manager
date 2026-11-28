@@ -120,7 +120,7 @@ test_coordinator_idle_y_stops_on_active_chain_x_does_not :: proc(t: ^testing.T) 
 	idle_tick(ifx, 2)
 	if !testing.expect_value(t, len(ifx.stops.ids), 1) do return
 	testing.expect_value(t, ifx.stops.ids[0], "inst_coord")
-	testing.expect_value(t, ifx.stops.reasons[0], COORDINATOR_IDLE_REASON)
+	testing.expect_value(t, ifx.stops.reasons[0], string(COORDINATOR_IDLE_REASON))
 	testing.expect(t, !strings.has_prefix(ifx.stops.reasons[0], "user"), "the reason never marks a user stop")
 	testing.expect_value(t, idle_stamp(ifx), stamp) // firing is not a reset
 }
@@ -136,7 +136,7 @@ test_coordinator_idle_x_stops_completed_chain_with_reason :: proc(t: ^testing.T)
 	testing.expect_value(t, len(ifx.stops.ids), 0)
 	idle_tick(ifx, 2)
 	if !testing.expect_value(t, len(ifx.stops.ids), 1) do return
-	testing.expect_value(t, ifx.stops.reasons[0], COORDINATOR_IDLE_REASON_COMPLETED)
+	testing.expect_value(t, ifx.stops.reasons[0], string(COORDINATOR_IDLE_REASON_COMPLETED))
 }
 
 @(test)
@@ -155,7 +155,7 @@ test_coordinator_idle_user_events_reset_the_stamp :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(ifx.stops.ids), 0)
 	idle_tick(ifx, 30 * 60)
 	if !testing.expect_value(t, len(ifx.stops.ids), 1) do return
-	testing.expect_value(t, ifx.stops.reasons[0], COORDINATOR_IDLE_REASON_COMPLETED)
+	testing.expect_value(t, ifx.stops.reasons[0], string(COORDINATOR_IDLE_REASON_COMPLETED))
 	// The stamp never moves backwards.
 	_, _ = iface.agent_touch_user_activity(&ifx.fx.agents, "inst_coord", first)
 	testing.expect_value(t, idle_stamp(ifx), second)
@@ -176,7 +176,7 @@ test_coordinator_idle_completed_then_reopened_cancels_x_and_recomplete_rearms ::
 	arm_coordinator_idle_for_chain(&ifx.fx.svc, ifx.chain) // re-complete re-arms (overdue → next tick)
 	idle_tick(ifx, 1)
 	if !testing.expect_value(t, len(ifx.stops.ids), 1) do return
-	testing.expect_value(t, ifx.stops.reasons[0], COORDINATOR_IDLE_REASON_COMPLETED)
+	testing.expect_value(t, ifx.stops.reasons[0], string(COORDINATOR_IDLE_REASON_COMPLETED))
 }
 
 @(test)
@@ -211,7 +211,7 @@ test_coordinator_idle_guards_defer_then_stop :: proc(t: ^testing.T) {
 	idle_tick(ifx, COORDINATOR_IDLE_START_GRACE_SECONDS)
 	// every guard cleared, stamp unchanged: stop once.
 	if !testing.expect_value(t, len(ifx.stops.ids), 1) do return
-	testing.expect_value(t, ifx.stops.reasons[0], COORDINATOR_IDLE_REASON)
+	testing.expect_value(t, ifx.stops.reasons[0], string(COORDINATOR_IDLE_REASON))
 	idle_tick(ifx, COORDINATOR_IDLE_RETRY_SECONDS * 3)
 	testing.expect_value(t, len(ifx.stops.ids), 1)
 }
@@ -258,7 +258,7 @@ test_coordinator_idle_boot_rebuild_fires_overdue_promptly :: proc(t: ^testing.T)
 	testing.expect_value(t, idle_stamp(ifx), old) // boot never resets
 	_ = fire_due(&ifx.fx.svc, idle_now(ifx))
 	if !testing.expect_value(t, len(ifx.stops.ids), 1) do return
-	testing.expect_value(t, ifx.stops.reasons[0], COORDINATOR_IDLE_REASON_COMPLETED)
+	testing.expect_value(t, ifx.stops.reasons[0], string(COORDINATOR_IDLE_REASON_COMPLETED))
 }
 
 @(test)
@@ -332,7 +332,7 @@ test_coordinator_idle_waiting_claim_does_not_defer :: proc(t: ^testing.T) {
 	if !testing.expect(t, held && lease.phase == domain.LEASE_PHASE_WAITING, "waiting claim stored") do return
 	idle_tick(ifx, IDLE_Y + 1)
 	if !testing.expect_value(t, len(ifx.stops.ids), 1) do return
-	testing.expect_value(t, ifx.stops.reasons[0], COORDINATOR_IDLE_REASON)
+	testing.expect_value(t, ifx.stops.reasons[0], string(COORDINATOR_IDLE_REASON))
 }
 
 // The stop re-checks the stamp and unread input right before stop_instance:

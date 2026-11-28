@@ -33,7 +33,7 @@ start_command_shape_scenario :: proc(t:^testing.T,h:^Start_Test) {
 start_command_new_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	start_test_sql(t,h,`UPDATE bridges SET capabilities_json='{"features":["start_agent_v1"]}' WHERE bridge_id='brg'`)
 	// Exercise the manual start service, rather than only the wire helper.
-	_, _, ok, err := start(&h.service,start_test_auth(),"inst",{})
+	_, _, ok, err := start(&h.service,start_test_auth(),"inst",{reason=.User_Start})
 	testing.expect(t,ok,err.message)
 	if !testing.expect_value(t,len(h.commands),1) do return
 	testing.expect_value(t,jsonx.extract_string(h.commands[0],"type"),"start_agent")
@@ -41,7 +41,7 @@ start_command_new_scenario :: proc(t:^testing.T,h:^Start_Test) {
 }
 
 start_command_old_launch_scenario :: proc(t:^testing.T,h:^Start_Test) {
-	_, _, ok, err := start(&h.service,start_test_auth(),"inst",{})
+	_, _, ok, err := start(&h.service,start_test_auth(),"inst",{reason=.User_Start})
 	testing.expect(t,ok,err.message)
 	if !testing.expect_value(t,len(h.commands),1) do return
 	testing.expect_value(t,h.commands[0],start_test_expected(t,h,0))

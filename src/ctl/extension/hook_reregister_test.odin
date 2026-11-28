@@ -127,9 +127,14 @@ test_hook_permission_reregisters_same_blocker_after_disconnect :: proc(t: ^testi
 	_ = hook_run("claude", raw, env, rr_send)
 	if len(rr_params) == 1 do testing.expect(t, strings.contains(rr_params[0], `"blocker_id":"blk_pinned"`), rr_params[0])
 
-	// Codex uses the same retry contract with its own renderer; no local
-	// ham-ctl exception, even when the native command is a coordination call.
-	codex_raw := `{"session_id":"s","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"$HEIMDALL_CTL_BIN chat read"}}`
+	// Codex uses the same retry contract and the same ham-ctl self-approval.
+	codex_ham_ctl := `{"session_id":"s","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"\"$HEIMDALL_CTL_BIN\" chat read"}}`
+	rr_reset([]string{allow})
+	env = rr_env(10_000)
+	env.ctl_bin = "/issued/ham-ctl"
+	testing.expect(t, strings.contains(hook_run("codex", codex_ham_ctl, env, rr_send), `"behavior":"allow"`))
+	testing.expect_value(t, len(rr_params), 0)
+	codex_raw := `{"session_id":"s","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"curl https://example.invalid"}}`
 	codex_script := []string{"", allow}
 	rr_reset(codex_script)
 	env = rr_env(10_000)
@@ -204,7 +209,7 @@ test_hook_permission_reregisters_same_blocker_after_disconnect :: proc(t: ^testi
 	}
 
 	// Local ham-ctl auto-approval: allowlisted coordination command approves locally with 0 bridge calls
-	agy_ham_ctl := `{"hookEventName":"PreToolUse","conversationId":"s_agy","permissionMode":"ask","stepIdx":5,"toolCall":{"name":"run_command","args":{"CommandLine":"$HEIMDALL_CTL_BIN chat read","Cwd":"/repo"}}}`
+	agy_ham_ctl := `{"hookEventName":"PreToolUse","conversationId":"s_agy","permissionMode":"ask","stepIdx":5,"toolCall":{"name":"run_command","args":{"CommandLine":"\"$HEIMDALL_CTL_BIN\" chat read","Cwd":"/repo"}}}`
 	rr_reset([]string{deny_reply})
 	testing.expect_value(t, hook_run("antigravity", agy_ham_ctl, env, rr_send), `{"decision":"allow"}`)
 	testing.expect_value(t, len(rr_params), 0)

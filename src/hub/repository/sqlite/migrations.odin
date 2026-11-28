@@ -698,7 +698,7 @@ MIGRATION_EVENTS_003_SUBSCRIPTIONS :: #load("migrations/events_003_subscriptions
 MIGRATION_EVENTS_002_TOPICS :: #load("migrations/events_002_topics.sql", string)
 
 MIGRATION_223_EXTENSION_VERSION_SYNC :: #load("migrations/223_extension_version_sync_0_5_63.sql", string)
-MIGRATION_271_BOT_CHANNEL_CONVERSION_SOURCES :: #load("migrations/271_bot_channel_conversion_sources.sql", string)
+MIGRATION_272_BOT_CHANNEL_CONVERSION_SOURCES :: #load("migrations/272_bot_channel_conversion_sources.sql", string)
 MIGRATION_BOTS_WEB_004_ACTIVATION :: #load("migrations/bots_web_004_activation.sql", string)
 MIGRATION_BOTS_WEB_003_ACTION_REFS :: #load("migrations/bots_web_003_action_refs.sql", string)
 MIGRATION_BOTS_WEB_002_ATTACHMENTS :: #load("migrations/bots_web_002_attachments.sql", string)
@@ -815,6 +815,7 @@ MIGRATION_268_BRIDGE_PROVIDER_ACP_RECEIVED_AT :: #load("migrations/268_bridge_pr
 MIGRATION_269_PROFILE_TRANSPORT :: #load("migrations/269_profile_transport.sql", string)
 
 MIGRATION_270_EXTENSION_VERSION_SYNC :: #load("migrations/270_extension_version_sync_0_5_96.sql", string)
+MIGRATION_271_REPLY_ORIGIN :: #load("migrations/271_reply_origin.sql", string)
 
 migration_order :: [?]string {
 	"001_foundation.sql",
@@ -1123,8 +1124,9 @@ migration_order :: [?]string {
 	"268_bridge_provider_acp_received_at.sql",
 	"269_profile_transport.sql",
 	"270_extension_version_sync_0_5_96.sql",
+	"271_reply_origin.sql",
 	"bots_web_004_activation.sql",
-	"271_bot_channel_conversion_sources.sql",
+	"272_bot_channel_conversion_sources.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1151,7 +1153,7 @@ run_migrations :: proc(
 		if stop_before != "" && name == stop_before do return true, domain.Domain_Error{}
 		// The invitation generation column is the final DDL statement in this
 		// migration. Recover a restart after schema commit but before its ledger.
-		if name == "271_bot_channel_conversion_sources.sql" && table_column_exists(conn,"channel_pairings","activation_generation") {
+		if name == "272_bot_channel_conversion_sources.sql" && table_column_exists(conn,"channel_pairings","activation_generation") {
 			mark_migration_applied(conn,name)
 			continue
 		}
@@ -1651,6 +1653,11 @@ run_migrations :: proc(
 			mark_migration_applied(conn, name)
 			continue
 		}
+		// 271 runs inside its own BEGIN/COMMIT; its last table proves completion.
+		if name == "271_reply_origin.sql" && sqlite_object_exists(conn, "chat_reply_watermarks") {
+			mark_migration_applied(conn, name)
+			continue
+		}
 		// 110 commits atomically before its ledger row; its column proves completion.
 		if name == "110_provider_ask_args.sql" && table_column_exists(conn, "provider_catalog", "ask_args") {
 			mark_migration_applied(conn, name)
@@ -1685,7 +1692,7 @@ run_migrations :: proc(
 			)
 		}
 		if !exec(conn, sql) {
-			if name == "actions_007_filter_tree.sql" || name == "actions_001_reset.sql" || name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" || name == "events_006_instance_subscriptions.sql" || name == "events_007_entity_versions.sql" || name == "260_drop_fleet_roles.sql" || name == "263_task_merge_pending.sql" || name == "266_instance_runtime_transport_override.sql" || name == "267_reconfiguration_waiting_for_idle.sql" || name == "269_profile_transport.sql" do _ = exec(conn, "ROLLBACK;")
+			if name == "actions_007_filter_tree.sql" || name == "actions_001_reset.sql" || name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" || name == "events_006_instance_subscriptions.sql" || name == "events_007_entity_versions.sql" || name == "260_drop_fleet_roles.sql" || name == "263_task_merge_pending.sql" || name == "266_instance_runtime_transport_override.sql" || name == "267_reconfiguration_waiting_for_idle.sql" || name == "269_profile_transport.sql" || name == "271_reply_origin.sql" do _ = exec(conn, "ROLLBACK;")
 			delete(sql)
 			return false, domain.domain_error(
 				.Internal_Error,
@@ -1726,6 +1733,7 @@ run_migrations :: proc(
 }
 
 migration_sql :: proc(name, migrations_dir: string) -> string {
+	if name == "271_reply_origin.sql" do return strings.clone(MIGRATION_271_REPLY_ORIGIN)
 	if name == "270_extension_version_sync_0_5_96.sql" do return strings.clone(MIGRATION_270_EXTENSION_VERSION_SYNC)
 	if name == "269_profile_transport.sql" do return strings.clone(MIGRATION_269_PROFILE_TRANSPORT)
 	if name == "268_bridge_provider_acp_received_at.sql" do return strings.clone(MIGRATION_268_BRIDGE_PROVIDER_ACP_RECEIVED_AT)
@@ -1797,7 +1805,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "224_copilot_acp_transport.sql" do return strings.clone(MIGRATION_224_COPILOT_ACP_TRANSPORT)
 	if name == "223_extension_version_sync_0_5_63.sql" do return strings.clone(MIGRATION_223_EXTENSION_VERSION_SYNC)
 	if name == "222_extension_version_sync_0_5_62.sql" do return strings.clone(MIGRATION_222_EXTENSION_VERSION_SYNC)
-	if name == "271_bot_channel_conversion_sources.sql" do return strings.clone(MIGRATION_271_BOT_CHANNEL_CONVERSION_SOURCES)
+	if name == "272_bot_channel_conversion_sources.sql" do return strings.clone(MIGRATION_272_BOT_CHANNEL_CONVERSION_SOURCES)
 	if name == "bots_web_004_activation.sql" do return strings.clone(MIGRATION_BOTS_WEB_004_ACTIVATION)
 	if name == "bots_web_003_action_refs.sql" do return strings.clone(MIGRATION_BOTS_WEB_003_ACTION_REFS)
 	if name == "bots_web_002_attachments.sql" do return strings.clone(MIGRATION_BOTS_WEB_002_ATTACHMENTS)

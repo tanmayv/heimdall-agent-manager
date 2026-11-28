@@ -39,6 +39,10 @@ pty_agent_runtime := Agent_Runtime{
 	interrupt       = pty_agent_interrupt,
 	can_steer       = pty_agent_can_steer,
 	usage           = bridge_ext_usage_snapshot,
+	// Terminal agents report usage through extension hooks and idle through
+	// hooks or the screen detector; they cannot compact, so they roll over.
+	context_sources = {.Extension, .Terminal},
+	handoff_request = pty_agent_handoff_request,
 }
 
 // Seams: tests capture frames and skip real delays.
@@ -368,6 +372,16 @@ pty_agent_interrupt :: proc(instance: string) -> bool {
 
 pty_agent_can_steer :: proc(instance: string) -> bool {
 	return pty_runtime_delivery(instance).can_steer
+}
+
+// The rollover's handoff request is typed at the trusted idle the policy just
+// saw. The rollover holds every other input (pty_runtime_deliverable: Held),
+// so this is the one input that may pass that hold; a stopped or restarting
+// agent is never typed into.
+pty_agent_handoff_request :: proc(instance, text: string) -> bool {
+	snap, ok := bridge_runtime_instance_snapshot(instance)
+	if !ok || !snap.pty_process_alive || snap.stopped_intent_unix_ms != 0 || !snap.start_success_seen do return false
+	return pty_runtime_type_now(instance, text, .Queue)
 }
 
 pty_agent_notices_ready :: proc(instance: string) -> bool {

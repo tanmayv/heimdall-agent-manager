@@ -101,7 +101,7 @@ antigravity_file_edit_event :: proc(root: json.Object, ts: string) -> (string, b
 	pb_int(&p, "deletions", res.deletions)
 	if res.truncated do pb_bool(&p, "diff_truncated", true)
 	if res.binary do pb_bool(&p, "binary", true)
-	eb := ext_event_begin("file.edit", ts, root, ANTIGRAVITY_PROVIDER, ANTIGRAVITY_EXT_VERSION)
+	eb := ext_event_begin(.File_Edit, ts, root, ANTIGRAVITY_PROVIDER, ANTIGRAVITY_EXT_VERSION)
 	ext_event_tool(&eb, root, nil, nil)
 	return ext_event_end(&eb, pb_done(&p)), true
 }

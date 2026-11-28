@@ -45,7 +45,7 @@ answer_chat_questions_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		// its durable inbox record remains available to the next instance wake.
 		policy, policy_err := conversation_write_state(h, auth, cid)
 		if policy_err.code == .None && policy.generation == 0 {
-			_, _ = restart_stopped_conversation_instance(h, auth, cid)
+			_, _ = restart_stopped_conversation_instance(h, auth, cid, .User_Message)
 		}
 	}
 	b := strings.builder_make()

@@ -87,7 +87,30 @@ Agent_Runtime :: struct {
 	// Why: the UI terminal pane sends keystrokes; a runtime without a terminal
 	// (ACP) maps them to interrupt / steer. nil: the bytes are typed as is.
 	raw_input:    proc(instance: string, data: []byte) -> bool,
+	// Context policy (context_rollover.odin). The runtime owns it: these say
+	// where its usage and idle come from and how it frees context.
+	// context_sources: the only signals that drive its context policy and
+	// usage (one usage source per instance, G7); anything else is ignored,
+	// so hooks of a child that loads a user plugin cannot start a rollover.
+	context_sources: bit_set[Runtime_Context_Source],
+	// Why: a runtime whose agent compacts natively frees context in place
+	// (no restart, no handoff). Called only at a trusted idle; false when the
+	// agent was busy or the request could not be sent. nil: it cannot compact
+	// and the policy rolls it over.
+	compact:      proc(instance: string) -> bool,
+	// Why: a rollover asks the agent for its handoff at a trusted idle, inside
+	// the rollover's own hold of the inbox. Required when compact is nil.
+	handoff_request: proc(instance, text: string) -> bool,
 }
+
+// Where a runtime's context signals come from: extension hooks (ham.ext.v1),
+// the terminal screen detector (pane_diff), or the runtime protocol itself.
+Runtime_Context_Source :: enum u8 { Extension, Terminal, Protocol }
+
+// An instance no runtime owns (no transport recorded yet) has no policy to
+// choose a source: every signal counts. Each runtime records its transport
+// before its child starts, so this never applies to a running ACP child.
+BRIDGE_CONTEXT_SOURCES_UNOWNED :: bit_set[Runtime_Context_Source]{.Extension, .Terminal, .Protocol}
 
 // The runtimes, keyed by the transport recorded for an instance. Built per
 // call: no mutable registry is shared between threads.
@@ -183,6 +206,29 @@ bridge_runtime_child_exited :: proc(instance: string) {
 bridge_runtime_can_steer :: proc(instance: string) -> bool {
 	rt := bridge_runtime_owner(instance)
 	return rt != nil && rt.can_steer != nil && rt.can_steer(instance)
+}
+
+// bridge_runtime_context_accepts: whether a context signal from source may
+// drive this instance's context policy and usage.
+bridge_runtime_context_accepts :: proc(instance: string, source: Runtime_Context_Source) -> bool {
+	rt := bridge_runtime_owner(instance)
+	sources := rt.context_sources if rt != nil else BRIDGE_CONTEXT_SOURCES_UNOWNED
+	return source in sources
+}
+
+bridge_runtime_can_compact :: proc(instance: string) -> bool {
+	rt := bridge_runtime_owner(instance)
+	return rt != nil && rt.compact != nil
+}
+
+bridge_runtime_compact :: proc(instance: string) -> bool {
+	rt := bridge_runtime_for(instance)
+	return rt != nil && rt.compact != nil && rt.compact(instance)
+}
+
+bridge_runtime_handoff_request :: proc(instance, text: string) -> bool {
+	rt := bridge_runtime_for(instance)
+	return rt != nil && rt.handoff_request != nil && rt.handoff_request(instance, text)
 }
 
 bridge_runtime_usage :: proc(instance: string) -> (contracts.Ext_Usage, bool) {

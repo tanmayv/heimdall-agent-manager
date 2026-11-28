@@ -23,6 +23,10 @@ acp_agent_runtime := Agent_Runtime{
 	can_steer       = acp_agent_can_steer,
 	usage           = bridge_ext_usage_snapshot,
 	raw_input       = acp_agent_raw_input,
+	// ACP usage and idle come from the protocol only; the agent compacts
+	// natively and never rolls over (user decision, R7).
+	context_sources = {.Protocol},
+	compact         = acp_agent_compact,
 }
 
 // A queued user input waits for the next turn; the inbox never steers it.
@@ -71,6 +75,12 @@ acp_agent_interrupt :: proc(instance: string) -> bool {
 acp_agent_stop :: proc(instance: string) {
 	acp_runtime_command(instance, "stop")
 	acp_runtime_detach(instance)
+}
+
+// The driver compacts in a turn of its own (Claude ACP: a /compact prompt;
+// Codex app-server: thread/compact/start). Refused unless the session is idle.
+acp_agent_compact :: proc(instance: string) -> bool {
+	return acp_runtime_command(instance, "compact")
 }
 
 acp_agent_child_exited :: proc(instance: string) {

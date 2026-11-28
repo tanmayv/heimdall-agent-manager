@@ -1560,7 +1560,7 @@ t25_race_job :: proc(job:^T25_Race_Job) {
  context.temp_allocator=context.allocator
  err:domain.Domain_Error
  if job.manual {
-  current,ok,e:=agent.start_instance(job.fx.svc.agent_service,{user_id="u1",kind=.Internal_User},job.inst.agent_instance_id)
+  current,ok,e:=agent.start_instance(job.fx.svc.agent_service,{user_id="u1",kind=.Internal_User},job.inst.agent_instance_id,.User_Start)
   job.opened=ok;err=e
   domain.agent_instance_destroy(&current)
  } else {

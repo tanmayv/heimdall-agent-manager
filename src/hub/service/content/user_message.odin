@@ -31,14 +31,40 @@ persist_user_message :: proc(s:^Content_Service,auth:contracts.Auth_Context,cid:
 }
 
 // Shared normal user-message effects, always invoked after durable persistence.
-deliver_user_message :: proc(s:^Content_Service,auth:contracts.Auth_Context,cid:string,m:domain.Chat_Message)->(bool,domain.Domain_Error) {
+// The delivery result of a user message (D5). Accepted: the running agent's
+// bridge was sent the notice. Pending: the message is stored and unread but
+// the agent is not running (or still starting), or its bridge could not be
+// reached; reason says which. A message to a stopped or dead agent is never
+// Accepted. No agent bound: nothing to deliver (Accepted).
+Message_Delivery_State :: enum u8 { Accepted, Pending }
+Message_Delivery :: struct { state: Message_Delivery_State, reason: string }
+
+MESSAGE_DELIVERY_STATE_WIRE := [Message_Delivery_State]string{.Accepted = contracts.MESSAGE_DELIVERY_ACCEPTED, .Pending = contracts.MESSAGE_DELIVERY_PENDING}
+
+message_delivery_state_wire :: proc(state: Message_Delivery_State) -> string { return MESSAGE_DELIVERY_STATE_WIRE[state] }
+
+// message_delivery_for: the result for an agent row read after the notice
+// was (or was not) sent. A row in no running state, or one still launching
+// (the notice waits in the bridge inbox for its readiness), is pending.
+message_delivery_for :: proc(inst: domain.Agent_Instance, found, notified: bool, notify_err: domain.Domain_Error) -> Message_Delivery {
+	if !found do return {.Pending, contracts.MESSAGE_DELIVERY_REASON_AGENT_NOT_FOUND}
+	if !agent.runtime_expected_active(inst.runtime_status) || inst.runtime_status == "stopping" do return {.Pending, contracts.MESSAGE_DELIVERY_REASON_AGENT_NOT_RUNNING}
+	if !notified do return {.Pending, contracts.MESSAGE_DELIVERY_REASON_BRIDGE_OFFLINE if notify_err.code == .Bridge_Offline else contracts.MESSAGE_DELIVERY_REASON_DELIVERY_UNAVAILABLE}
+	if inst.runtime_status == "launching" || inst.runtime_status == "starting" do return {.Pending, contracts.MESSAGE_DELIVERY_REASON_AGENT_STARTING}
+	return {.Accepted, ""}
+}
+
+deliver_user_message :: proc(s:^Content_Service,auth:contracts.Auth_Context,cid:string,m:domain.Chat_Message)->(Message_Delivery,domain.Domain_Error) {
 	c,ok,err:=get_conversation(s,auth,cid)
-	if !ok do return false,err
+	if !ok do return {.Pending, contracts.MESSAGE_DELIVERY_REASON_CONVERSATION_UNAVAILABLE},err
 	notify_message_attention(s,m)
 	notified,nerr:=notify_agent_message_checked(s,c,"user_to_agent","user",m.message_id,"User")
 	record_activity_and_maybe_nudge(s,cid,m.created_at)
 	note_user_activity(s,c.agent_instance_id)
-	return notified,nerr
+	if c.agent_instance_id=="" do return {.Accepted, ""},{}
+	inst,found:=domain.Agent_Instance{},false
+	if s.agents!=nil do inst,found,_=iface.agent_get_instance(s.agents,c.agent_instance_id)
+	return message_delivery_for(inst,found,notified,nerr),nerr
 }
 
 // User_Activity_Hook reports a USER event addressed to an agent instance

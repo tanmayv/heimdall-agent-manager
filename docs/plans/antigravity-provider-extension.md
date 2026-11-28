@@ -52,38 +52,16 @@ The extension is governed by four core requirements: `REQ-EXT-AGY-1` through `RE
        └── hooks.json              # Hook registration mapping lifecycle events to ham-ctl
    ```
 2. **Hook Declaration (`hooks.json`)**:
-   Every hook event shall invoke the provider-agnostic CLI handler:
-   ```json
-   {
-     "heimdall": {
-       "PreInvocation": [
-         { "type": "command", "command": "\"$HEIMDALL_CTL_BIN\" extension hook antigravity", "timeout": 10 }
-       ],
-       "PostInvocation": [
-         { "type": "command", "command": "\"$HEIMDALL_CTL_BIN\" extension hook antigravity", "timeout": 10 }
-       ],
-       "PreToolUse": [
-         {
-           "matcher": "*",
-           "hooks": [
-             { "type": "command", "command": "\"$HEIMDALL_CTL_BIN\" extension hook antigravity", "timeout": 330 }
-           ]
-         }
-       ],
-       "PostToolUse": [
-         {
-           "matcher": "*",
-           "hooks": [
-             { "type": "command", "command": "\"$HEIMDALL_CTL_BIN\" extension hook antigravity", "timeout": 30 }
-           ]
-         }
-       ],
-       "Stop": [
-         { "type": "command", "command": "\"$HEIMDALL_CTL_BIN\" extension hook antigravity", "timeout": 10 }
-       ]
-     }
-   }
+   Every hook event shall invoke the provider-agnostic CLI handler through the
+   one env guard every provider's `hooks.json` shares (`HOOK_COMMAND_GUARD` in
+   `src/ctl/extension/hook.odin`, kept identical by
+   `test_hooks_json_commands_use_the_shared_env_guard`):
+   ```sh
+   [ -x "${HEIMDALL_CTL_BIN:-}" ] || exit 0; exec "$HEIMDALL_CTL_BIN" extension hook antigravity
    ```
+   Hook timeouts: `PreInvocation`, `PostInvocation` and `Stop` 10s, `PostToolUse`
+   30s, `PreToolUse` 330s (it may block on a permission relay). The full file is
+   `extensions/antigravity/hooks/hooks.json`.
 3. **Provider Catalog Registration**:
    A new SQLite migration (`src/hub/repository/sqlite/migrations/113_antigravity_extension.sql`) shall update `provider_catalog` for `provider = 'antigravity'`:
    - `extension`: JSON descriptor declaring:
@@ -157,7 +135,7 @@ The extension is governed by four core requirements: `REQ-EXT-AGY-1` through `RE
 ### REQ-EXT-AGY-3: Interactive Permission Relay & Blocker Coordination
 
 1. **Permission Interception via `PreToolUse`**:
-   - In `permission_mode: ask`, before executing potentially destructive tools (`run_command`, `write_to_file`, `replace_file_content`), the hook checks whether user approval is required.
+   - In `permission_mode: ask`, before executing any tool except the read-only native tools the repo's captures name (`ANTIGRAVITY_UNGATED_TOOLS`, today `view_file`), the hook requests user approval. Subagent tools are gated because child payloads carry no `permissionMode`; unknown and MCP tools fail safe to asking.
 2. **Local Auto-Approval of Coordination Commands**:
    - Agents coordinate with Heimdall via `ham-ctl` (`chat send`, `task comment`, `lease heartbeat`, etc.).
    - If `toolCall.name == "run_command"` and `toolCall.args.CommandLine` is an allowlisted `ham-ctl` command verified by `is_ham_ctl_command`, the hook must approve it locally at once.
@@ -340,7 +318,7 @@ flowchart TD
 - **Assignee**: `agt_worker_tanmay`
 - **Files to Create/Modify**:
   - `extensions/antigravity/plugin.json`: Plugin manifest declaring `name: "heimdall"`, version `0.1.0`.
-  - `extensions/antigravity/hooks/hooks.json`: Lifecycle hook definitions for `PreInvocation`, `PostInvocation`, `PreToolUse`, `PostToolUse`, `Stop` invoking `"$HEIMDALL_CTL_BIN" extension hook antigravity`.
+  - `extensions/antigravity/hooks/hooks.json`: Lifecycle hook definitions for `PreInvocation`, `PostInvocation`, `PreToolUse`, `PostToolUse`, `Stop` running the shared guarded hook command (`HOOK_COMMAND_GUARD` + `antigravity`).
   - `extensions/antigravity/README.md`: User and operator documentation detailing installation, CLI behavior outside Heimdall, permission models, and diagnostics.
   - `extensions/antigravity/.agents/plugins/marketplace.json`: (Optional) Marketplace metadata if registered locally.
 - **Verification Command**:
@@ -349,7 +327,7 @@ flowchart TD
   ```
 - **Acceptance Criteria**:
   - `plugin.json` validates successfully with `agy plugin validate`.
-  - All five lifecycle events mapped to `"$HEIMDALL_CTL_BIN" extension hook antigravity`.
+  - All five lifecycle events mapped to the shared guarded hook command (`HOOK_COMMAND_GUARD` + `antigravity`).
   - Timeouts configured: 10s for invocation/stop, 330s for PreToolUse, 30s for PostToolUse.
 
 ---

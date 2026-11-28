@@ -298,7 +298,7 @@ coordinator_wake_stopped_instance :: proc(h: ^Agent_Action_Handlers, auth: contr
 	d.guard_taken = true
 	ch := Content_Handlers{auth = h.auth, agents = h.agents, content = h.content, event_bus = h.event_bus}
 	guard := Coordinator_Start_Guard{agents=h.agents, auth=auth, instance_id=target_instance_id}
-	restarted, restart_err := restart_stopped_conversation_instance(&ch, auth, cid, &guard, coordinator_start_guard)
+	restarted, restart_err := restart_stopped_conversation_instance(&ch, auth, cid, .Coordinator_Wake, &guard, coordinator_start_guard)
 	if !restarted { if guard.user_stopped { outcome = .User_Stopped; return outcome }; outcome = .Failed; code = restart_err.code; return outcome }
 	outcome = .Started
 	return outcome

@@ -1452,7 +1452,7 @@ create_chain_with_prepared_coordinator :: proc(h: ^Taskchain_Handlers, auth_ctx:
 	input.chain_id = string(chain.chain_id)
 	inst, prepared, prepare_err := agent_service.create_instance_stopped(h.agents, auth_ctx, input)
 	if !prepared do return {}, {}, prepare_err
-	ticket, err = agent_service.start_begin(h.agents, auth_ctx, inst.agent_instance_id, {if_live=.Refuse})
+	ticket, err = agent_service.start_begin(h.agents, auth_ctx, inst.agent_instance_id, {if_live=.Refuse, reason=.Chain_Create})
 	domain.agent_instance_destroy(&inst)
 	if err.code != .None do return {}, ticket, err
 	committed, commit_err := iface.unit_of_work_commit(&uow)
@@ -2391,7 +2391,7 @@ upsert_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 					continue
 				}
 				// Preserve the fetched snapshot for start admission's expected-state fence.
-				if relaunched_inst, relaunched, relaunch_err := agent_service.relaunch_instance(h.agents, auth_ctx, inst, launch_provider, launch_model, selected_profile); relaunched {
+				if relaunched_inst, relaunched, relaunch_err := agent_service.relaunch_instance(h.agents, auth_ctx, inst, .Reconfiguration, launch_provider, launch_model, selected_profile); relaunched {
 					append(&restarted_ids, strings.clone(inst.agent_instance_id, context.temp_allocator))
 					append(&restart_results, Fleet_Restart_Result{instance_id = strings.clone(inst.agent_instance_id, context.temp_allocator), outcome = "accepted"})
 					defer domain.agent_instance_destroy(&relaunched_inst)

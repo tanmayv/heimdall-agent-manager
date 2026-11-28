@@ -61,7 +61,7 @@ transport_pty_scenario :: proc(t: ^testing.T, h: ^Start_Test) {
 	testing.expect_value(t, row.runtime_transport_override, "pty")
 	// Relaunch: the instance choice wins over the bridge-provider ACP setting.
 	start_test_sql(t, h, "UPDATE agent_instances SET runtime_status='stopped', startup_status='stopped', stopped_by='user';")
-	ticket, start_err := start_begin(&h.service, start_test_auth(), "inst", {ref = "after-pin", if_live = .Relaunch})
+	ticket, start_err := start_begin(&h.service, start_test_auth(), "inst", {reason=.User_Start, ref = "after-pin", if_live = .Relaunch})
 	testing.expect_value(t, start_err.code, domain.Error_Code.None)
 	testing.expect_value(t, ticket.instance.runtime_transport, "pty")
 	start_ticket_destroy(&ticket)
@@ -82,7 +82,7 @@ transport_acp_scenario :: proc(t: ^testing.T, h: ^Start_Test) {
 	testing.expect(t, strings.contains(last, `"effective_transport":"acp"`), last)
 	// Relaunch with the bridge-wide setting explicitly PTY: ACP survives.
 	start_test_sql(t, h, "UPDATE bridge_provider_settings SET transport='pty'; UPDATE agent_instances SET runtime_status='stopped', startup_status='stopped', stopped_by='user';")
-	ticket, start_err := start_begin(&h.service, start_test_auth(), "inst", {ref = "after-acp", if_live = .Relaunch})
+	ticket, start_err := start_begin(&h.service, start_test_auth(), "inst", {reason=.User_Start, ref = "after-acp", if_live = .Relaunch})
 	testing.expect_value(t, start_err.code, domain.Error_Code.None)
 	testing.expect_value(t, ticket.instance.runtime_transport, "acp")
 	start_ticket_destroy(&ticket)
@@ -110,7 +110,7 @@ transport_omitted_scenario :: proc(t: ^testing.T, h: ^Start_Test) {
 	testing.expect_value(t, row.runtime_transport_override, "")
 	// Unpinned instances keep following the bridge-wide setting on relaunch.
 	start_test_sql(t, h, "UPDATE bridge_provider_settings SET transport=NULL; UPDATE agent_instances SET runtime_status='stopped', startup_status='stopped', stopped_by='user';")
-	ticket, start_err := start_begin(&h.service, start_test_auth(), "inst", {ref = "unpinned", if_live = .Relaunch})
+	ticket, start_err := start_begin(&h.service, start_test_auth(), "inst", {reason=.User_Start, ref = "unpinned", if_live = .Relaunch})
 	testing.expect_value(t, start_err.code, domain.Error_Code.None)
 	testing.expect_value(t, ticket.instance.runtime_transport, "pty")
 	start_ticket_destroy(&ticket)

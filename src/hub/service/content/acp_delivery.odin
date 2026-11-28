@@ -197,6 +197,8 @@ apply_input_state_report :: proc(s: ^Content_Service, auth: contracts.Auth_Conte
             next.mode = e.mode; next.turn_id = e.turn_id
             if next.delivered_at == "" do next.delivered_at = now
             if err := iface.content_set_message_delivery_flags(local.content, row.message_id, next.delivered_at, false); err.code != .None do return result, false, err
+            // Inline delivery is consumption for the reply origin (R7).
+            if err := iface.content_record_input_consumption(local.content, c.owner_user_id, c.conversation_id, row.message_id, domain.INPUT_CONSUMED_DELIVERED, now); err.code != .None do return result, false, err
         } else if row.hold_reason != "turn_active" {
             // turn_active is sticky until delivery: a row never flickers out of the tray.
             next.hold_reason = e.hold_reason

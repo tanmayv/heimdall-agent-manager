@@ -208,19 +208,30 @@ send_chat_message_handler :: proc(ctx: rawptr, req: Request) -> Response {
     if err.code != .None do return respond_error(err, req.request_id)
     input := message_input(req.body)
     m: domain.Chat_Message
+    delivery: content_service.Message_Delivery
     created := true
     if policy.generation > 0 {
-        m, created, err = send_generation_message(h, auth, cid, input, req.body)
+        m, delivery, created, err = send_generation_message(h, auth, cid, input, req.body)
     } else {
-        if restarted, start_err := restart_stopped_conversation_instance(h, auth, cid); !restarted do return respond_error(start_err, req.request_id)
-        m, ok, err = content_service.send_message(h.content, auth, cid, input)
+        if restarted, start_err := restart_stopped_conversation_instance(h, auth, cid, .User_Message); !restarted do return respond_error(start_err, req.request_id)
+        m, delivery, ok, err = content_service.send_message_delivered(h.content, auth, cid, input)
         if !ok do return respond_error(err, req.request_id)
     }
     if err.code != .None do return respond_error(err, req.request_id)
     if created do publish_user_message_created(h, auth, cid, m)
     b := strings.builder_make(allocator=context.temp_allocator)
     write_message_json(&b, m, h.content)
+    write_message_delivery_json(&b, delivery)
     return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201 if created else 200)
+}
+
+// Splices the send's delivery result (D5) into the message object just
+// written: {"delivery":{"state":"accepted|pending","reason":"..."}}.
+write_message_delivery_json :: proc(b:^strings.Builder, d:content_service.Message_Delivery) {
+	if strings.builder_len(b^)==0 do return
+	resize(&b.buf, len(b.buf)-1)
+	strings.write_string(b,",\"delivery\":{\"state\":\""); write_handler_json_string(b,content_service.message_delivery_state_wire(d.state))
+	strings.write_string(b,"\",\"reason\":\""); write_handler_json_string(b,d.reason); strings.write_string(b,"\"}}")
 }
 
 // publish_user_message_created tells every socket of the owner (other tabs and
@@ -392,14 +403,16 @@ create_template_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content
 update_template_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; t,saved,err:=content_service.update_template(h.content,auth,path_part(req.path,4),template_input(req.body)); if !saved do return respond_error(err,req.request_id); b:=strings.builder_make(); write_template_json(&b,t); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req)) }
 delete_template_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; deleted,err:=content_service.delete_template(h.content,auth,path_part(req.path,4)); if !deleted do return respond_error(err,req.request_id); return Response{status=204,content_type="application/json",body=""} }
 
-restart_stopped_conversation_instance :: proc(h:^Content_Handlers, auth:contracts.Auth_Context, cid:string, guard_ctx:rawptr=nil, guard:proc(ctx:rawptr)->domain.Domain_Error=nil)->(bool,domain.Domain_Error) {
+// Ensures the conversation's agent runs before a message is delivered (the
+// one lifecycle path, agent_service.ensure_running).
+restart_stopped_conversation_instance :: proc(h:^Content_Handlers, auth:contracts.Auth_Context, cid:string, reason:agent_service.Start_Reason, guard_ctx:rawptr=nil, guard:proc(ctx:rawptr)->domain.Domain_Error=nil)->(bool,domain.Domain_Error) {
  c, got, err := content_service.get_conversation(h.content, auth, cid)
  if !got do return false, err
  if c.agent_instance_id == "" || h.agents == nil do return true, {}
  if h.content.agent_configuration_service != nil {
   if valid, validity_err := agent_service.validate_instance_message_configuration(h.agents,c.owner_user_id,c.agent_instance_id); !valid do return false,validity_err
  }
- inst, kept, started, start_err := agent_service.start(h.agents, auth, c.agent_instance_id, {if_live=.Keep, guard=guard, guard_ctx=guard_ctx})
+ inst, kept, started, start_err := agent_service.ensure_running(h.agents, auth, c.agent_instance_id, reason, guard_ctx, guard)
  if !started do return false, start_err
  defer domain.agent_instance_destroy(&inst)
  if !kept do publish_instance_changed(h.event_bus, inst, "status_changed")

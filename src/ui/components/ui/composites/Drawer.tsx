@@ -84,6 +84,8 @@ export interface DrawerProps
   fullHeight?: boolean;
   /** `sheet`: the bottom menu sheet (handle, scrim, safe-area padding, enter/exit motion). Only with side='bottom'. Default `default`. */
   variant?: 'default' | 'sheet';
+  /** Animate horizontal (`left`/`right`) drawers sliding in/out with backdrop fade. Default false (bottom sheets always animate). */
+  animated?: boolean;
   /** Move focus to the panel's first focusable on open. Default true. */
   autoFocus?: boolean;
   /** Where focus returns on close (default: the element focused when it opened). */
@@ -105,6 +107,7 @@ const DrawerBase: React.FC<DrawerProps> = ({
   hideHeader = false,
   fullHeight = false,
   variant = 'default',
+  animated = false,
   autoFocus = true,
   returnFocusRef,
   className,
@@ -119,14 +122,16 @@ const DrawerBase: React.FC<DrawerProps> = ({
 
   const isBottom = side === 'bottom';
   const isSheet = isBottom && variant === 'sheet' && !fullHeight;
+  const isAnimatedHorizontal = (side === 'right' || side === 'left') && animated;
+  const hasExitAnimation = isSheet || isAnimatedHorizontal;
 
-  // A sheet stays mounted while it plays its exit. Derived while rendering (not in
-  // an effect) so the sheet never unmounts for one commit and remounts.
+  // Animated drawers stay mounted while they play their exit. Derived while rendering
+  // (not in an effect) so the drawer never unmounts for one commit and remounts.
   const [closing, setClosing] = useState(false);
   const [prevOpen, setPrevOpen] = useState(open);
   if (prevOpen !== open) {
     setPrevOpen(open);
-    setClosing(!open && isSheet);
+    setClosing(!open && hasExitAnimation);
   }
   useEffect(() => {
     if (!closing) return;
@@ -142,7 +147,13 @@ const DrawerBase: React.FC<DrawerProps> = ({
       (open ? 'animate-sheet-in' : 'animate-sheet-out')
     : isBottom
       ? (fullHeight ? 'h-full max-h-full w-full rounded-none border-t-0' : SIDE_CLASS.bottom)
-      : SIDE_CLASS[side];
+      : isAnimatedHorizontal
+        ? `${SIDE_CLASS[side]} ${
+            side === 'right'
+              ? (open ? 'animate-drawer-right-in' : 'animate-drawer-right-out')
+              : (open ? 'animate-drawer-left-in' : 'animate-drawer-left-out')
+          }`
+        : SIDE_CLASS[side];
 
   const accessibleLabel = typeof title === 'string' ? title : (typeof title === 'number' ? String(title) : (rest['aria-label'] || 'Drawer'));
 
@@ -151,12 +162,16 @@ const DrawerBase: React.FC<DrawerProps> = ({
       // REQ-MODAL-2: `app-viewport-height`, not `inset-0`. See the SIDE_CLASS note above.
       className={[
         'fixed inset-x-0 top-0 app-viewport-height z-modal flex',
-        isSheet ? `bg-scrim ${open ? 'animate-fade-in' : 'animate-fade-out pointer-events-none'}` : 'bg-backdrop backdrop-blur-sm',
+        isSheet
+          ? `bg-scrim ${open ? 'animate-fade-in' : 'animate-fade-out pointer-events-none'}`
+          : isAnimatedHorizontal
+            ? `bg-backdrop backdrop-blur-sm ${open ? 'animate-fade-in' : 'animate-fade-out pointer-events-none'}`
+            : 'bg-backdrop backdrop-blur-sm',
         isBottom ? 'items-end' : '',
       ]
         .filter(Boolean)
         .join(' ')}
-      data-state={isSheet ? (open ? 'open' : 'closing') : undefined}
+      data-state={hasExitAnimation ? (open ? 'open' : 'closing') : undefined}
       aria-hidden={open ? undefined : true}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) close();

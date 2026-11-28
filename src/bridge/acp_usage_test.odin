@@ -76,10 +76,17 @@ acp_usage_update_reaches_token_accumulator :: proc(t: ^testing.T) {
     s = usage_test_snapshot(instance)
     testing.expect_value(t, s.context_tokens, i64(61000))
     testing.expect_value(t, s.reported_window, i64(1000000))
-    // Near-full context does not start a PTY-only context rollover.
+    // R7 (replaces R4's ACP-stays-Normal pin): protocol usage past
+    // rollover_pct feeds the ACP runtime's context policy. Mid-turn it only
+    // marks the compaction pending: no handoff request, no restart.
+    sync.mutex_lock(&bridge_runtime_mutex)
+    for &inst in bridge_runtime_instances do if inst.agent_instance_id == instance do inst.runtime_transport = acp_agent_runtime.transport
+    sync.mutex_unlock(&bridge_runtime_mutex)
+    defer bridge_rollover_forget(instance)
     codex_test_frame(t, &f, 5, `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"usage_update","used":950000,"size":1000000}}}`)
     testing.expect_value(t, usage_test_snapshot(instance).context_tokens, i64(950000))
-    testing.expect_value(t, bridge_rollover_phase_of(instance), Bridge_Rollover_Phase.Normal)
+    testing.expect_value(t, bridge_rollover_phase_of(instance), Bridge_Rollover_Phase.Pending)
+    testing.expect(t, bridge_runtime_can_compact(instance), "the ACP runtime compacts instead of rolling over")
 }
 
 @(test)
@@ -135,4 +142,69 @@ acp_driver_usage_rejects_malformed_reports :: proc(t: ^testing.T) {
     testing.expect(t, !ok)
     u, ok = acp_codex_usage(&r, "thread/tokenUsage/updated", `{"threadId":"s","tokenUsage":{"total":{},"last":{"totalTokens":5}}}`)
     testing.expect(t, ok && u.context_tokens == 5 && !u.has_output_tokens_total && !u.has_context_window)
+}
+
+// R7: Claude ACP compacts natively with a /compact prompt turn
+// (@agentclientprotocol/claude-agent-acp runs slash commands as a turn), only
+// on an idle session; the turn ends like any other.
+@(test)
+acp_claude_compact_is_a_slash_compact_turn_when_idle :: proc(t: ^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+    old := bridge_local_token_records; bridge_local_token_records = make([dynamic]Bridge_Local_Agent_Token_Record, allocator = runtime.heap_allocator())
+    defer { delete(bridge_local_token_records); bridge_local_token_records = old }
+    instance := "inst_acp_compact_claude"
+    f: T4_Runtime_Test; usage_test_open(&f, instance); defer usage_test_close(&f, instance)
+    testing.expect(t, f.r.driver == &acp_protocol_acp_driver)
+    // Not ready yet (no session set up): nothing is sent.
+    testing.expect(t, !t4_runtime_call(&f, "compact"))
+    f.r.initialized = true; f.r.d.ready = true; acp_runtime_replace(&f.r.d.phase, "ready")
+    testing.expect(t, t4_runtime_call(&f, "compact"))
+    if !acp_test_wait(t, &f.f, .Writes, 1) do return
+    sync.mutex_lock(&f.f.mu)
+    line := strings.clone(f.f.writes[0].bytes, context.temp_allocator)
+    sync.mutex_unlock(&f.f.mu)
+    testing.expect(t, strings.contains(line, `"method":"session/prompt"`) && strings.contains(line, `"text":"/compact"`) && strings.contains(line, `"sessionId":"s"`), line)
+    testing.expect(t, f.r.d.phase == "prompt" && strings.has_prefix(f.r.d.current_input, ACP_COMPACT_INPUT_PREFIX))
+    // Never mid-turn.
+    testing.expect(t, !t4_runtime_call(&f, "compact"))
+    sync.mutex_lock(&f.f.mu); writes := len(f.f.writes); sync.mutex_unlock(&f.f.mu)
+    testing.expect_value(t, writes, 1)
+    t4_runtime_reply(t, &f, 0, `{"stopReason":"end_turn"}`, 1)
+    testing.expect(t, f.r.d.phase == "ready" && f.r.d.current_input == "")
+}
+
+// R7: Codex app-server compacts with thread/compact/start
+// (codex-schema v2 ThreadCompactStartParams {threadId}); the compaction runs
+// as a turn and ends through turn/completed. A refusal ends that turn without
+// breaking the session. Never mid-turn.
+@(test)
+acp_codex_compact_sends_thread_compact_start_when_idle :: proc(t: ^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+    old := bridge_local_token_records; bridge_local_token_records = make([dynamic]Bridge_Local_Agent_Token_Record, allocator = runtime.heap_allocator())
+    defer { delete(bridge_local_token_records); bridge_local_token_records = old }
+    f: T4_Runtime_Test; codex_test_open(&f); defer codex_test_close(&f)
+    codex_test_active(&f)
+    testing.expect(t, t4_runtime_call(&f, "compact"))
+    params := codex_test_write(t, &f, 0, "thread/compact/start")
+    testing.expect_value(t, acp_event_string(params, "threadId"), "s")
+    testing.expect(t, f.r.d.phase == "prompt")
+    testing.expect(t, !t4_runtime_call(&f, "compact"))
+    codex_test_reply(t, &f, 0, 1, `{}`)
+    codex_test_frame(t, &f, 2, `{"method":"turn/started","params":{"threadId":"s","turn":{"id":"turn-c1","status":"inProgress"}}}`)
+    codex_test_frame(t, &f, 3, `{"method":"turn/completed","params":{"threadId":"s","turn":{"id":"turn-c1","status":"completed"}}}`)
+    testing.expect(t, f.r.d.phase == "ready" && f.r.d.current_input == "" && f.r.d.error == "")
+    // A refused compaction: the session stays usable.
+    testing.expect(t, t4_runtime_call(&f, "compact"))
+    codex_test_write(t, &f, 1, "thread/compact/start")
+    sync.mutex_lock(&f.f.mu)
+    id := strings.clone(acp_rpc_raw_id(f.f.writes[1].bytes), context.temp_allocator)
+    sync.mutex_unlock(&f.f.mu)
+    codex_test_frame(t, &f, 4, strings.concatenate({`{"id":`, id, `,"error":{"code":-32600,"message":"compaction unavailable"}}`}, context.temp_allocator))
+    testing.expect(t, f.r.d.phase == "ready" && f.r.d.error == "", f.r.d.error)
+    // Mid-turn: a user turn is running, so no compaction is sent.
+    codex_test_start(t, &f, "msg_busy")
+    codex_test_write(t, &f, 2, "turn/start")
+    testing.expect(t, !t4_runtime_call(&f, "compact"))
+    sync.mutex_lock(&f.f.mu); writes := len(f.f.writes); sync.mutex_unlock(&f.f.mu)
+    testing.expect_value(t, writes, 3)
 }

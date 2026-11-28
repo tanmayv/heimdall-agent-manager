@@ -365,7 +365,7 @@ coordinator_wake_set_stopped :: proc(t: ^testing.T, c: ^Coordinator_Wake_Fixture
 coordinator_wake_idle_stop :: proc(t: ^testing.T, c: ^Coordinator_Wake_Fixture, reason: string) {
 	testing.expect(t, sqlite.exec(&c.f.conn, "UPDATE agent_instances SET runtime_status='running' WHERE agent_instance_id='inst_wake';"))
 	auth := contracts.Auth_Context{kind = .Internal_User, user_id = string(c.f.owner)}
-	_, stopped, stop_err := agent_service.stop_instance(c.f.ah.agents, auth, "inst_wake", {reason = reason})
+	_, stopped, stop_err := agent_service.stop_instance(c.f.ah.agents, auth, "inst_wake", {reason = agent_service.Stop_Reason(reason)})
 	testing.expectf(t, stopped, "stop %s: %s", reason, stop_err.message)
 	testing.expect(t, sqlite.exec(&c.f.conn, "UPDATE agent_instances SET runtime_status='stopped' WHERE agent_instance_id='inst_wake';"))
 	inst, _, _ := iface.agent_get_instance(&c.f.ag_repo, "inst_wake")
@@ -476,7 +476,7 @@ test_user_chat_wakes_idle_stopped_coordinator :: proc(t: ^testing.T) {
 		c := coordinator_wake_fixture(t)
 		coordinator_wake_idle_stop(t, c, reason)
 		ch := Content_Handlers{auth = c.f.ah.auth, agents = c.f.ah.agents, content = c.f.ah.content, event_bus = c.f.ah.event_bus}
-		restarted, err := restart_stopped_conversation_instance(&ch, {kind = .Internal_User, user_id = string(c.f.owner)}, "chat_wake")
+		restarted, err := restart_stopped_conversation_instance(&ch, {kind = .Internal_User, user_id = string(c.f.owner)}, "chat_wake",.User_Message)
 		testing.expectf(t, restarted, "%s: %s", reason, err.message)
 		testing.expectf(t, coordinator_wake_launches(c) == 1, "%s: launches=%d (case %d)", reason, coordinator_wake_launches(c), i)
 		coordinator_wake_fixture_destroy(c)

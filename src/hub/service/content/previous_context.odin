@@ -1,6 +1,7 @@
 package content
 
 import "core:crypto/sha2"
+import "core:encoding/json"
 import "core:fmt"
 import "core:strings"
 import "core:sync"
@@ -20,7 +21,15 @@ import platform "odin_test:hub/platform"
 // own agent_to_agent sends). It is never notified to the agent: the process
 // that wrote it is about to be restarted, and the restart prompt tells the new
 // process to read its messages.
+//
+// It is addressed to the NEXT process: the row records the run that wrote it
+// (metadata written_run_count), and that run's own reads neither return nor
+// mark it (previous_context_hidden_from_run). Otherwise any read by the old
+// process between the handoff and its restart (its own chat read, or an ACP
+// runtime's input drain, which marks on admission) left the new process an
+// already-read handoff that a plain `chat read` skips.
 MESSAGE_TYPE_PREVIOUS_CONTEXT :: "previous_context"
+PREVIOUS_CONTEXT_WRITTEN_RUN_KEY :: "written_run_count"
 
 Previous_Context_Input :: struct {
 	// request_id is chosen by the bridge and is stable across retries.
@@ -28,6 +37,36 @@ Previous_Context_Input :: struct {
 	// body is stored verbatim (the CLI vault-seals it; the hub never reads it).
 	body:          string,
 	metadata_json: string,
+	// The writer's run_count (from the verified instance, never the payload).
+	written_run_count: int,
+}
+
+// previous_context_hidden_from_run: a handoff is hidden from the run that
+// wrote it. Rows without a recorded run (older builds) are never hidden.
+previous_context_hidden_from_run :: proc(m: domain.Chat_Message, run_count: int) -> bool {
+	if m.message_type != MESSAGE_TYPE_PREVIOUS_CONTEXT || run_count <= 0 do return false
+	parsed, err := json.parse(m.metadata_json, allocator = context.temp_allocator)
+	if err != nil do return false
+	obj, ok := parsed.(json.Object)
+	if !ok do return false
+	written, number := obj[PREVIOUS_CONTEXT_WRITTEN_RUN_KEY].(json.Float)
+	if !number do return false
+	return int(written) == run_count
+}
+
+// The hub's run stamp replaces any client-supplied value of the same key.
+@(private = "file")
+previous_context_metadata :: proc(metadata_json: string, run_count: int) -> string {
+	if run_count <= 0 do return metadata_json
+	obj: json.Object
+	if parsed, err := json.parse(metadata_json, allocator = context.temp_allocator); err == nil {
+		if o, ok := parsed.(json.Object); ok do obj = o
+	}
+	if obj == nil do obj = make(json.Object, allocator = context.temp_allocator)
+	obj[PREVIOUS_CONTEXT_WRITTEN_RUN_KEY] = json.Float(f64(run_count))
+	raw, merr := json.marshal(obj, allocator = context.temp_allocator)
+	if merr != nil do return metadata_json
+	return string(raw)
 }
 
 // The persisted row is the deduplication receipt: the id is derived from the
@@ -81,7 +120,7 @@ store_previous_context :: proc(s: ^Content_Service, auth: contracts.Auth_Context
 		message_id = id, conversation_id = c.conversation_id, owner_user_id = c.owner_user_id,
 		direction = "user_to_agent", sender_agent_id = c.agent_id, sender_agent_instance_id = c.agent_instance_id,
 		body = input.body, artifact_ids_json = "[]", message_type = MESSAGE_TYPE_PREVIOUS_CONTEXT,
-		metadata_json = input.metadata_json, created_at = now,
+		metadata_json = previous_context_metadata(input.metadata_json, input.written_run_count), created_at = now,
 	}
 	saved, save_ok, save_err := save_message(s, m)
 	if !save_ok do return {}, false, save_err

@@ -100,7 +100,7 @@ test_completion_fences_delayed_rollover_before_bridge_stop :: proc(t: ^testing.T
 	testing.expect_value(t,inst.stop_reason,"task_completed")
 	reservations, commands := log.registry.active_instances, len(log.cmds)
 	log.service.bridge_command_sink={ctx=log,send_runtime_command=lifetime_record_runtime}
-	_, restarted, err := agent.restart_instance(&log.service,inst_auth("inst_w1"),"inst_w1",{expected_run_count=generation})
+	_, restarted, err := agent.restart_instance(&log.service,inst_auth("inst_w1"),"inst_w1",.User_Restart,{expected_run_count=generation})
 	testing.expect(t,!restarted)
 	testing.expect_value(t,err.code,domain.Error_Code.Conflict)
 	testing.expect_value(t,run_count_of(fx,"inst_w1"),generation)
@@ -109,7 +109,7 @@ test_completion_fences_delayed_rollover_before_bridge_stop :: proc(t: ^testing.T
 	// A late live report cannot erase the committed stop intent either.
 	inst.runtime_status="idle"
 	_, _, _ = iface.agent_save_instance(&fx.agents,inst)
-	_, late_restart, late_err := agent.restart_instance(&log.service,inst_auth("inst_w1"),"inst_w1",{expected_run_count=generation})
+	_, late_restart, late_err := agent.restart_instance(&log.service,inst_auth("inst_w1"),"inst_w1",.User_Restart,{expected_run_count=generation})
 	testing.expect(t,!late_restart)
 	testing.expect_value(t,late_err.code,domain.Error_Code.Conflict)
 	testing.expect_value(t,run_count_of(fx,"inst_w1"),generation)
@@ -146,7 +146,7 @@ test_waiting_responsibility_survives_rollover :: proc(t: ^testing.T) {
 	inst, _, _ := iface.agent_get_instance(&fx.agents,"inst_w1")
 	wake_log_reset(log)
 	log.service.bridge_command_sink={ctx=log,send_runtime_command=lifetime_record_runtime}
-	restarted, accepted, err := agent.restart_instance(&log.service,inst_auth("inst_w1"),"inst_w1",{expected_run_count=inst.run_count})
+	restarted, accepted, err := agent.restart_instance(&log.service,inst_auth("inst_w1"),"inst_w1",.User_Restart,{expected_run_count=inst.run_count})
 	testing.expect(t,accepted,err.message)
 	testing.expect_value(t,restarted.run_count,inst.run_count+1)
 	testing.expect_value(t,restarted.conversation_id,inst.conversation_id)

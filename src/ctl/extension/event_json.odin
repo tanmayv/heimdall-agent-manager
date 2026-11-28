@@ -10,13 +10,15 @@ Ext_Event_Builder :: struct {
 	b: strings.Builder,
 }
 
-ext_event_begin :: proc(event: string, ts: string, root: json.Object, provider, version: string) -> (eb: Ext_Event_Builder) {
+// The event name always comes from the contracts enum, so a producer cannot
+// emit a kind the bridge does not know.
+ext_event_begin :: proc(kind: contracts.Ext_Event_Kind, ts: string, root: json.Object, provider, version: string) -> (eb: Ext_Event_Builder) {
 	eb.b = strings.builder_make()
 	b := &eb.b
 	strings.write_string(b, `{"schema":`); json_write_string(b, contracts.EXT_SCHEMA_V1)
 	strings.write_string(b, `,"provider":`); json_write_string(b, provider)
 	strings.write_string(b, `,"ext_version":`); json_write_string(b, version)
-	strings.write_string(b, `,"event":`); json_write_string(b, event)
+	strings.write_string(b, `,"event":`); json_write_string(b, contracts.ext_event_kind_name(kind))
 	strings.write_string(b, `,"ts":`); json_write_string(b, ts)
 	strings.write_string(b, `,"session_id":`); json_write_string(b, json_get_string(root, "session_id"))
 	if tp := json_get_string(root, "transcript_path"); tp != "" {
@@ -140,6 +142,46 @@ ext_compaction_event :: proc(ts: string, root: json.Object, provider, version, p
 	pb_str(&p, "phase", phase)
 	pb_str_nonempty(&p, "trigger", json_get_string(root, "trigger"))
 	pb_str_nonempty(&p, "model", json_get_string(root, "model"))
-	eb := ext_event_begin(contracts.ext_event_kind_name(.Compaction), ts, root, provider, version)
+	eb := ext_event_begin(.Compaction, ts, root, provider, version)
 	return ext_event_end(&eb, pb_done(&p))
+}
+
+// ext_hello_event is the one hello serializer: payload {capabilities, source?}
+// with the capability names in contracts.Ext_Capability order.
+ext_hello_event :: proc(ts: string, root: json.Object, provider, version: string, caps: contracts.Ext_Capabilities) -> string {
+	p := pb_make()
+	pb_key(&p, "capabilities")
+	strings.write_byte(&p.b, '[')
+	n := 0
+	for c in contracts.Ext_Capability {
+		if c not_in caps do continue
+		if n > 0 do strings.write_byte(&p.b, ',')
+		json_write_string(&p.b, contracts.ext_capability_name(c))
+		n += 1
+	}
+	strings.write_byte(&p.b, ']')
+	pb_str_nonempty(&p, "source", json_get_string(root, "source"))
+	eb := ext_event_begin(.Hello, ts, root, provider, version)
+	return ext_event_end(&eb, pb_done(&p))
+}
+
+// pb_permission_relay writes the relay fields of a permission.request payload:
+// timeout_ms (clamped by permission_timeout_clamp) when the caller set one and
+// blocker_id when non-empty. The hook core always supplies both; a bare
+// map_hook call without them maps the request without relay fields.
+pb_permission_relay :: proc(p: ^Payload_Builder, timeout_ms: int, blocker_id: string) {
+	if timeout_ms > 0 do pb_int(p, "timeout_ms", permission_timeout_clamp(timeout_ms))
+	pb_str_nonempty(p, "blocker_id", blocker_id)
+}
+
+// ext_events_within_bounds: every event under contracts.EXT_EVENT_MAX_BYTES and
+// the whole batch under contracts.EXT_BATCH_MAX_BYTES (with room for the
+// {"events":[...]} envelope), so the bridge never rejects what a hook sends.
+ext_events_within_bounds :: proc(events: []string) -> bool {
+	total := 0
+	for ev in events {
+		total += len(ev)
+		if len(ev) > contracts.EXT_EVENT_MAX_BYTES || total > contracts.EXT_BATCH_MAX_BYTES - 1024 do return false
+	}
+	return true
 }

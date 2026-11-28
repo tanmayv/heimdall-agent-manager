@@ -2,6 +2,7 @@ package main
 
 import "base:runtime"
 import "core:encoding/json"
+import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:sync"
@@ -83,6 +84,17 @@ acp_driver_acp_prompt :: proc(r: ^ACP_Runtime, input: Bridge_Inbox_Input, bootst
     }
 }
 
+// claude-agent-acp runs slash commands sent as a prompt; /compact compacts
+// the session's context in that turn.
+ACP_CLAUDE_COMPACT_PROMPT :: "/compact"
+
+acp_driver_acp_compact :: proc(r: ^ACP_Runtime) -> bool {
+    if r.session == "" do return false
+    id := fmt.tprintf("%s%d", ACP_COMPACT_INPUT_PREFIX, r.client.state.next_rpc_id)
+    acp_driver_acp_prompt(r, Bridge_Inbox_Input{id = id, text = ACP_CLAUDE_COMPACT_PROMPT})
+    return r.d.phase == "prompt" && r.d.error == ""
+}
+
 acp_driver_acp_result :: proc(data: rawptr, result: ACP_RPC_Result) {
     defer acp_rpc_result_delete(result)
     r := cast(^ACP_Runtime)data
@@ -156,7 +168,7 @@ acp_driver_acp_result :: proc(data: rawptr, result: ACP_RPC_Result) {
         if acp_runtime_events.prompt_finished != nil do acp_runtime_events.prompt_finished(r, r.d.current_input, result.result_json, "")
         bridge_inbox_remember(r.inbox, r.d.current_input)
         acp_runtime_replace(&r.d.current_input, ""); acp_runtime_replace(&r.d.phase, "ready")
-        bridge_runtime_note_agent_activity(r.instance, "idle", "acp")
+        acp_runtime_turn_idle(r)
         acp_runtime_drain(r)
     }
 }

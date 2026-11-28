@@ -46,7 +46,7 @@ legacy_idle_stopped_reviewer :: proc(t: ^testing.T, absence_verified: bool) {
 	reviewer.stopped_at = platform.clock_now(&fx.clock)
 	_, saved, err := iface.agent_save_instance(&fx.agents, reviewer)
 	if !testing.expect(t, saved, err.message) do return
-	stopped, stop_err := iface.agent_set_stop_reason(&fx.agents, reviewer.agent_instance_id, STOP_REASON_IDLE_TTL)
+	stopped, stop_err := iface.agent_set_stop_reason(&fx.agents, reviewer.agent_instance_id, string(STOP_REASON_IDLE_TTL))
 	if !testing.expect(t, stopped, stop_err.message) do return
 
 	Probe_Fixture :: struct {calls: int, absence_verified: bool}

@@ -358,7 +358,7 @@ reconfiguration_start_stop :: proc(service: ^Agent_Service, op: domain.Instance_
 reconfiguration_send_stop :: proc(service: ^Agent_Service, stopping: domain.Instance_Reconfiguration) -> (domain.Instance_Reconfiguration, bool, domain.Domain_Error) {
 	stopping := stopping
 	op := stopping
-	command := project_service.Runtime_Command{bridge_id = op.source.bridge_id, command_id = op.stop_command_id, body_json = stop_command_json(op.stop_command_id, op.agent_instance_id, "configuration_change")}
+	command := project_service.Runtime_Command{bridge_id = op.source.bridge_id, command_id = op.stop_command_id, body_json = stop_command_json(op.stop_command_id, op.agent_instance_id, STOP_CONFIGURATION_CHANGE)}
 	if sent, _ := project_service.bridge_command_send_runtime(service.bridge_command_sink, command); !sent {
 		defer domain.instance_reconfiguration_destroy(&stopping)
 		// Close the disconnect race between the live-registry check and command
@@ -664,12 +664,12 @@ reconcile_instance_reconfigurations :: proc(service: ^Agent_Service, bridge_id: 
 			// Idempotent source-only stop is safe to resend after Hub restart: no
 			// destination can launch until the acknowledged phase was persisted.
 			if resend && bridge_id == op.source.bridge_id {
-				_, _ = project_service.bridge_command_send_runtime(service.bridge_command_sink, project_service.Runtime_Command{bridge_id = bridge_id, command_id = op.stop_command_id, body_json = stop_command_json(op.stop_command_id, op.agent_instance_id, "configuration_change")})
+				_, _ = project_service.bridge_command_send_runtime(service.bridge_command_sink, project_service.Runtime_Command{bridge_id = bridge_id, command_id = op.stop_command_id, body_json = stop_command_json(op.stop_command_id, op.agent_instance_id, STOP_CONFIGURATION_CHANGE)})
 			}
 		case .Recovery_Required:
 			if op.failure_code == "force_stopping" {
 				target := op.destination.bridge_id if op.destination_committed else op.source.bridge_id
-				if resend && bridge_id == target { _, _ = project_service.bridge_command_send_runtime(service.bridge_command_sink, project_service.Runtime_Command{bridge_id = target, command_id = op.stop_command_id, body_json = stop_command_json(op.stop_command_id, op.agent_instance_id, "recovery_force_stop", force = true)}) }
+				if resend && bridge_id == target { _, _ = project_service.bridge_command_send_runtime(service.bridge_command_sink, project_service.Runtime_Command{bridge_id = target, command_id = op.stop_command_id, body_json = stop_command_json(op.stop_command_id, op.agent_instance_id, STOP_RECOVERY_FORCE, force = true)}) }
 				continue
 			}
 			if op.destination_committed {
@@ -865,7 +865,7 @@ force_stop_instance_reconfiguration_locked :: proc(service: ^Agent_Service, auth
 	stopping, saved, save_err := reconfiguration_advance(service, next, .Recovery_Required, op.source_stopped, op.destination_committed, "force_stopping", "Force stopping the current runtime. Settings unlock after termination is confirmed.")
 	if !saved { domain.agent_instance_destroy(&inst); return {}, true, save_err }
 	defer domain.instance_reconfiguration_destroy(&stopping)
-	command := project_service.Runtime_Command{bridge_id = inst.bridge_id, command_id = stopping.stop_command_id, body_json = stop_command_json(stopping.stop_command_id, instance_id, "recovery_force_stop", force = true)}
+	command := project_service.Runtime_Command{bridge_id = inst.bridge_id, command_id = stopping.stop_command_id, body_json = stop_command_json(stopping.stop_command_id, instance_id, STOP_RECOVERY_FORCE, force = true)}
 	if sent, send_err := project_service.bridge_command_send_runtime(service.bridge_command_sink, command); !sent { domain.agent_instance_destroy(&inst); return {}, true, send_err }
 	inst.runtime_status = "stopping"; inst.updated_at = platform.clock_now(service.clock)
 	result, ok, persist_err := iface.agent_save_instance(service.agents, inst)

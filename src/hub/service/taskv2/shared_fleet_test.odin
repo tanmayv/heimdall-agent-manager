@@ -124,7 +124,7 @@ test_shared_fleet_new_coordinator_and_manual_start_boundary :: proc(t: ^testing.
 		testing.expect_value(t, inst.model, "claude-sonnet-5-5" if scope == "chain" else "claude-fable-5-1")
 		included, ce := iface.fleet_scope_get(&fx.bridges, inst)
 		testing.expect(t, ce.code == .None && included == (scope == "chain"), "new empty task coordinator is distinguished from a manual conversation")
-		ticket, start_err := agent.start_begin(&log.service, auth, inst.agent_instance_id, {})
+		ticket, start_err := agent.start_begin(&log.service, auth, inst.agent_instance_id, {reason=.User_Start})
 		if testing.expect_value(t, start_err.code, domain.Error_Code.None) {
 			testing.expect_value(t, ticket.instance.model, "claude-sonnet-5-5" if scope == "chain" else "claude-fable-5-1")
 			command := agent.start_launch_json(&log.service, ticket)
@@ -196,7 +196,7 @@ shared_fleet_expect_recorded_runtime :: proc(t: ^testing.T, fx: ^Fixture, chain:
 }
 
 @(test)
-test_shared_fleet_inline_and_coordinator_claim_record_actual_runtime_until_launch :: proc(t: ^testing.T) {
+test_shared_fleet_inline_and_coordinator_claim_keep_actual_runtime_across_relaunch :: proc(t: ^testing.T) {
 	for solo in ([]bool{false, true}) {
 		tag := "shared_inline_coord" if solo else "shared_inline_manual"
 		fx, log, ok := lease_fixture(t, tag)
@@ -238,10 +238,12 @@ test_shared_fleet_inline_and_coordinator_claim_record_actual_runtime_until_launc
 			included, ce := iface.fleet_scope_get(&fx.bridges, current)
 			testing.expect(t, ce.code == .None && included, "eligible manual caller promotes transactionally")
 			if solo do testing.expect(t, get_task(fx, string(task.task_id)).requires_user_approval, "the user review listed on the coordinator's task remains required")
-			ticket, te := agent.start_begin(&log.service, {kind=.Internal_User,user_id="u1"}, id, {if_live=.Relaunch})
+			ticket, te := agent.start_begin(&log.service, {kind=.Internal_User,user_id="u1"}, id, {reason=.User_Start, if_live=.Relaunch})
 			testing.expect_value(t, te.code, domain.Error_Code.None)
 			if te.code == .None {
-				testing.expect(t, ticket.instance.provider == desired.provider && ticket.instance.provider_profile == desired.provider_profile && ticket.instance.model == desired.model, "saved policy is observed at the next real launch")
+				// N2: a relaunch keeps the instance's own runtime; only applying
+				// Fleet settings reconfigures it (fleet_application).
+				testing.expect(t, ticket.instance.provider == actual.provider && ticket.instance.provider_profile == actual.provider_profile && ticket.instance.model == actual.model, "a relaunch keeps the instance runtime")
 				agent.start_cancel(&log.service, &ticket); agent.start_ticket_destroy(&ticket)
 			}
 		}

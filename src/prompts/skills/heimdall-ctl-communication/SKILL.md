@@ -24,6 +24,7 @@ Once you are initialized and ready to work, run `./bin/ham-ctl start-success` (i
 ```
 - `--to` is REQUIRED: `user`, or an exact instance id (`inst_...`), never a display name or slug. `--stdin` reads the body from stdin. `--actions <id,...>` attaches action cards (see `action-cards`).
 - ALWAYS report status, answers and completion to the user this way. Keep replies concise, concrete and actionable: what you did or found, exact results (commands run, files/paths, commit hashes), blockers, next steps. Do not dump large raw logs inline.
+- A reply to the user answers the messages you consumed (read, or were prompted with) since your previous reply; the Hub records that as the reply's origin. When it answers one specific earlier message instead, add `--reply-to <message_id>` (user replies only).
 - `chat set-title` is DEPRECATED: do not call it. Name your work with `task-chain set-title` instead.
 
 ## 4. Asking questions

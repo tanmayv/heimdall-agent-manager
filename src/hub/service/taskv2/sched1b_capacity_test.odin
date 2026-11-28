@@ -179,7 +179,7 @@ test_sched1b_review_takes_slot_of_grace_instance :: proc(t: ^testing.T) {
 	testing.expect(t, holds(fx, "inst_r2", domain.LEASE_KIND_REVIEW, "task_2"), "the pending review of another agent is placed")
 	testing.expect(t, wake_log_has_stop(log, "inst_r1"), "the grace instance yields its slot")
 	r1, _, _ := iface.agent_get_instance(&fx.agents, "inst_r1")
-	testing.expect_value(t, r1.stop_reason, STOP_REASON_CAPACITY_YIELD)
+	testing.expect_value(t, r1.stop_reason, string(STOP_REASON_CAPACITY_YIELD))
 }
 
 // Warm re-review at the cap (14.4): M = 3, r = 1, W = 2 and Q in its grace
