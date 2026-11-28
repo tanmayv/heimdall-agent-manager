@@ -298,7 +298,7 @@ pty_agent_submit :: proc(instance: string, input: Runtime_Input, mode: Runtime_M
 // no-op, also after a restart. Any outcome but Delivered leaves the inbox as
 // it was.
 pty_runtime_deliver_now :: proc(instance, text: string, mode: Runtime_Mode, request_id := "", input_id := "", consume_unread := false) -> contracts.Runtime_Send_Now_Outcome {
-	consumed := make([dynamic]string, context.temp_allocator)
+	consumed := make([dynamic]Bridge_Inbox_Typed, context.temp_allocator)
 	if request_id != "" && pty_runtime_send_now_applied(instance, request_id) do return .Delivered
 	// Read outside the inbox lock: the runtime registry is never taken under it.
 	if d := pty_runtime_deliverable(instance); d != .Ready do return pty_runtime_withheld_outcome(d)
@@ -307,8 +307,9 @@ pty_runtime_deliver_now :: proc(instance, text: string, mode: Runtime_Mode, requ
 		slot := bridge_inbox_slot_locked(instance)
 		if slot == nil || slot.busy do return .Failed
 		if request_id != "" && slot.inbox.send_now_applied == request_id do return .Delivered
-		if consume_unread do for input in slot.inbox.queue do if pty_runtime_unread(input) do append(&consumed, strings.clone(input.id, context.temp_allocator))
+		if consume_unread do for input in slot.inbox.queue do if pty_runtime_unread(input) do append(&consumed, bridge_inbox_typed_entry(input))
 		slot.busy = true
+		slot.typing_from = slot.inbox.next_seq
 	}
 	typed := pty_runtime_type_now(instance, text, mode)
 	sync.mutex_lock(&bridge_inbox_mu); defer sync.mutex_unlock(&bridge_inbox_mu)
@@ -316,7 +317,7 @@ pty_runtime_deliver_now :: proc(instance, text: string, mode: Runtime_Mode, requ
 	if slot == nil do return .Failed
 	slot.busy = false
 	if !typed do return .Failed
-	for id in consumed do bridge_inbox_remove(&slot.inbox, id)
+	bridge_inbox_commit_typed(&slot.inbox, consumed[:], slot.typing_from)
 	if input_id != "" do bridge_inbox_remember(&slot.inbox, input_id)
 	if request_id != "" do bridge_inbox_note_send_now_applied(&slot.inbox, request_id)
 	if !bridge_inbox_save(&slot.inbox) do fmt.eprintfln("bridge inbox: could not commit an explicit delivery for instance=%q; a restart may deliver it again", instance)

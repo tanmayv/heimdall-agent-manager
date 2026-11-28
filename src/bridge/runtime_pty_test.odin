@@ -18,6 +18,8 @@ Pty_Test_Op :: struct { input: string, key: Pty_Host_Key, is_key: bool }
 
 pty_test_ops: [dynamic]Pty_Test_Op
 pty_test_send_fail: bool
+// Runs once at the next captured write (while a delivery is being typed).
+pty_test_on_send: proc()
 
 // Tests run in parallel and the seams are global: frames for instances other
 // than the capture tests' own go to the real socket.
@@ -34,6 +36,7 @@ pty_test_send :: proc(socket: string, frame: []byte) -> bool {
 	data, captured := pty_test_captured(frame)
 	if !captured do return bridge_pty_host_send_oneway(socket, frame)
 	if pty_test_send_fail do return false
+	if hook := pty_test_on_send; hook != nil { pty_test_on_send = nil; hook() }
 	heap := runtime.heap_allocator()
 	if pty_test_ops.allocator.procedure == nil do pty_test_ops = make([dynamic]Pty_Test_Op, heap)
 	switch frame[4] {
@@ -641,4 +644,52 @@ pty_send_now_during_a_rollover_types_nothing_and_reports_held :: proc(t: ^testin
 	testing.expect(t, rt.send_now(id, {batch_id = "snb_held", attempt = 2}) == .Delivered)
 	testing.expect_value(t, pty_test_trace(), fmt.tprintf("Esc %q Enter Enter", notice))
 	testing.expect_value(t, len(pty_test_queued(id)), 0)
+}
+
+pty_test_s5_id :: "inst_pty_coalesce"
+pty_test_admit_anonymous :: proc() {
+	_ = bridge_runtime_submit(pty_test_s5_id, {kind = .User_Message, text = bridge_pty_host_unread_notice(), hub_message = true})
+}
+pty_test_admit_message :: proc() {
+	_ = bridge_runtime_submit(pty_test_s5_id, {kind = .User_Message, id = "msg_c_new", text = bridge_pty_host_unread_notice(), hub_message = true})
+}
+
+// S5: a notice that coalesces into the one being typed replaces it in place.
+// The commit still removes the typed entry; a coalesce without a new message
+// (an anonymous re-notice) is covered by the delivery, and a new message that
+// arrived after typing began leaves exactly one fresh notice.
+@(test)
+pty_coalesce_during_typing_keeps_one_notice_only_for_a_new_message :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+	context.allocator = runtime.heap_allocator()
+	env := pty_test_begin("pty-coalesce"); defer { pty_test_on_send = nil; pty_test_end(&env) }
+	id := pty_test_s5_id
+	defer bridge_runtime_set_status(id, "stopped", "idle")
+	notice := bridge_pty_host_unread_notice()
+	// The worker's drain: an anonymous re-notice during typing is covered.
+	pty_test_forget_typed(id)
+	pty_test_activity(id, "active", "pane_diff")
+	testing.expect(t, bridge_runtime_submit(id, {kind = .User_Message, id = "msg_c1", text = notice, hub_message = true}))
+	pty_test_activity(id, "idle", "pane_diff")
+	pty_test_on_send = pty_test_admit_anonymous
+	bridge_task_notice_tick(bridge_runtime_now_ms() + 10_000)
+	testing.expect_value(t, pty_test_trace(), fmt.tprintf("%q Enter Enter", notice))
+	testing.expect_value(t, len(pty_test_queued(id)), 0)
+	// Send now: a new message during typing stays as exactly one notice.
+	pty_test_reset()
+	testing.expect(t, bridge_runtime_submit(id, {kind = .User_Message, id = "msg_c2", text = notice, hub_message = true}))
+	pty_test_on_send = pty_test_admit_message
+	rt := bridge_runtime_for(id)
+	testing.expect(t, rt.send_now(id, {batch_id = "snb_c", attempt = 1}) == .Delivered)
+	ids := pty_test_queued(id)
+	testing.expect(t, len(ids) == 1 && ids[0] == "msg_c_new", "one fresh notice for the new message")
+	// Without a coalesce, the commit removes the typed entry.
+	pty_test_reset()
+	testing.expect(t, rt.send_now(id, {batch_id = "snb_c2", attempt = 1}) == .Delivered)
+	testing.expect_value(t, len(pty_test_queued(id)), 0)
+	// The sequence round-trips with the inbox file.
+	bridge_inbox_forget_all(); bridge_inbox_restore_all()
+	inbox := bridge_inbox_lock(id)
+	testing.expect(t, inbox != nil && inbox.next_seq >= 4)
+	if inbox != nil do bridge_inbox_unlock()
 }

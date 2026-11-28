@@ -60,6 +60,13 @@ Bridge_Inbox_Input :: struct {
     task, expected_state: string,
     // Admission time in the shared store (bridge clock); 0 when not tracked.
     queued_ms: i64,
+    // seq: admission order in this inbox (Bridge_Inbox.next_seq); a
+    // replacement gets a new one. msg_seq: the seq of the newest admission
+    // with its own identity this entry stands for (0: only anonymous notices,
+    // which carry no new message). Before admission, msg_seq < 0 asks for
+    // the entry's own seq. Together they tell a coalesce during typing that
+    // brings a new message from one that does not (bridge_inbox_commit_typed).
+    seq, msg_seq: i64,
 }
 
 // Durable batch selection. members is FIFO and frozen at the first merge;
@@ -83,6 +90,7 @@ Bridge_Inbox :: struct {
     send_now_applied: string,
     // Collection window of the Batch/Wake lanes and the notice rate limit.
     batch_first_ms, batch_last_ms, last_notice_turn_ms: i64,
+    next_seq: i64,
     instance: string `json:"-"`,
     sealed: bool `json:"-"`,
     saved: string `json:"-"`, // bytes last written; an unchanged save is skipped
@@ -96,7 +104,8 @@ bridge_inbox_input_delete :: proc(input: Bridge_Inbox_Input) {
 bridge_inbox_input_clone :: proc(input: Bridge_Inbox_Input, allocator := context.allocator) -> Bridge_Inbox_Input {
     context.allocator = allocator
     return {id = strings.clone(input.id), text = strings.clone(input.text), lane = input.lane, key = strings.clone(input.key),
-        kind = strings.clone(input.kind), task = strings.clone(input.task), expected_state = strings.clone(input.expected_state), queued_ms = input.queued_ms}
+        kind = strings.clone(input.kind), task = strings.clone(input.task), expected_state = strings.clone(input.expected_state), queued_ms = input.queued_ms,
+        seq = input.seq, msg_seq = input.msg_seq}
 }
 
 bridge_inbox_send_now_delete :: proc(s: ^Bridge_Inbox_Send_Now) {
@@ -194,7 +203,12 @@ bridge_inbox_admit :: proc(inbox: ^Bridge_Inbox, input: Bridge_Inbox_Input, now:
     if replace >= 0 do bytes -= len(inbox.queue[replace].text)
     slots := BRIDGE_INBOX_SLOTS if input.lane == .Steer else BRIDGE_INBOX_NOTICE_SLOTS
     if (replace < 0 && len(inbox.queue) + reserved_slots >= slots) || bytes > BRIDGE_INBOX_MAX_BYTES { bridge_inbox_input_delete(input); return .Full }
+    input := input
+    inbox.next_seq += 1
+    input.seq = inbox.next_seq
+    if input.msg_seq < 0 do input.msg_seq = input.seq
     if replace >= 0 {
+        input.msg_seq = max(input.msg_seq, inbox.queue[replace].msg_seq)
         bridge_inbox_remember(inbox, inbox.queue[replace].id)
         bridge_inbox_input_delete(inbox.queue[replace]); inbox.queue[replace] = input
     } else {
@@ -217,6 +231,31 @@ bridge_inbox_remove :: proc(inbox: ^Bridge_Inbox, id: string, remember := true) 
     if remember do bridge_inbox_remember(inbox, id)
     bridge_inbox_input_delete(inbox.queue[i]); ordered_remove(&inbox.queue, i)
     return true
+}
+
+// What a delivery typed, to commit it once typing is over.
+Bridge_Inbox_Typed :: struct { id, key, kind: string }
+
+// bridge_inbox_typed_entry snapshots a queued entry for commit (temp strings).
+bridge_inbox_typed_entry :: proc(input: Bridge_Inbox_Input) -> Bridge_Inbox_Typed {
+    return {strings.clone(input.id, context.temp_allocator), strings.clone(input.key, context.temp_allocator), strings.clone(input.kind, context.temp_allocator)}
+}
+
+// bridge_inbox_commit_typed commits a delivery whose typing began when the
+// inbox's next_seq was from: each typed entry leaves the inbox. An entry that
+// coalesced into a typed one while it was being typed (same key and kind,
+// seq > from) replaced it in place; it is covered by the delivery too unless
+// a message with its own identity arrived after typing began, and then it
+// stays as exactly one fresh notice.
+bridge_inbox_commit_typed :: proc(inbox: ^Bridge_Inbox, typed: []Bridge_Inbox_Typed, from: i64) {
+    for t in typed {
+        if bridge_inbox_remove(inbox, t.id) || t.key == "" do continue
+        for input in inbox.queue {
+            if input.key != t.key || input.kind != t.kind || input.seq <= from do continue
+            if input.msg_seq <= from do bridge_inbox_remove(inbox, input.id)
+            break
+        }
+    }
 }
 
 // The collection window has closed: no Batch/Wake arrival for the debounce
@@ -391,6 +430,7 @@ Bridge_Inbox_Slot :: struct {
     claimed: bool, // an ACP runtime owns this instance's inbox (tombstone)
     kicked: bool,  // a trusted idle: the collection window ends now
     busy: bool,    // a delivery of this inbox is being typed
+    typing_from: i64, // inbox.next_seq when that typing began
     retry_ms: i64, // a failed or not-ready delivery waits until then
 }
 

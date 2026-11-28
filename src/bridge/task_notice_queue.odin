@@ -50,12 +50,14 @@ bridge_inbox_input_from :: proc(input: Runtime_Input, now: i64) -> Bridge_Inbox_
     context.allocator = runtime.heap_allocator()
     user := input.kind == .User_Message
     id := input.id
+    // An input without an identity of its own carries no new message.
+    msg_seq: i64 = 0 if id == "" else -1
     if id == "" do id = fmt.tprintf("%s_%d", "input" if user else "notice", time.tick_now()._nsec)
     // Shared-store notifications always get a turn: the PTY runtime has no
     // context-only lane, and a wake must never wait for an unrelated turn.
     return {id = strings.clone(id), text = strings.clone(input.text), lane = .Steer if user else .Wake,
         key = strings.clone(input.key if input.key != "" else input.task), kind = strings.clone(BRIDGE_NOTICE_USER_MESSAGE if user else input.origin),
-        task = strings.clone(input.task), expected_state = strings.clone(input.expected_state), queued_ms = now}
+        task = strings.clone(input.task), expected_state = strings.clone(input.expected_state), queued_ms = now, msg_seq = msg_seq}
 }
 
 // bridge_inbox_admit_shared admits to an unclaimed inbox and commits it
@@ -290,7 +292,7 @@ bridge_inbox_drain_shared :: proc(instance: string, now: i64) {
     // can start a turn now (its one deliverable-now check plus a trusted
     // idle), and a busy, stopped or held agent keeps it queued.
     ready := target != nil && target.ready(instance)
-    batch := make([dynamic]string, context.temp_allocator)    // ids typed now
+    batch := make([dynamic]Bridge_Inbox_Typed, context.temp_allocator) // typed now
     dropped := make([dynamic]string, context.temp_allocator)  // stale task notices
     texts := make([dynamic]string, context.temp_allocator)
     sync.mutex_lock(&bridge_inbox_mu)
@@ -307,11 +309,11 @@ bridge_inbox_drain_shared :: proc(instance: string, now: i64) {
             // The batch goes as one turn once every decision is known.
             sync.mutex_unlock(&bridge_inbox_mu); return
         case .Deliver:
-            append(&batch, strings.clone(input.id, context.temp_allocator))
+            append(&batch, bridge_inbox_typed_entry(input))
             append(&texts, strings.clone(input.text, context.temp_allocator))
         }
     }
-    if len(batch) > 0 do slot.busy = true
+    if len(batch) > 0 { slot.busy = true; slot.typing_from = slot.inbox.next_seq }
     sync.mutex_unlock(&bridge_inbox_mu)
     delivered := false
     if len(batch) > 0 {
@@ -324,7 +326,7 @@ bridge_inbox_drain_shared :: proc(instance: string, now: i64) {
     slot.busy = false
     for id in dropped do bridge_inbox_remove(&slot.inbox, id)
     if delivered {
-        for id in batch do bridge_inbox_remove(&slot.inbox, id)
+        bridge_inbox_commit_typed(&slot.inbox, batch[:], slot.typing_from)
         bridge_inbox_window_reset(&slot.inbox)
         slot.kicked = false
     } else if len(batch) > 0 {
