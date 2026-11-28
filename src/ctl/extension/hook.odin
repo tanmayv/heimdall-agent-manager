@@ -319,7 +319,7 @@ hook_mapped_bounded :: proc(out: Hook_Mapped) -> (Hook_Mapped, Hook_Error) {
 // invocation of an allowlisted, side-effect-bounded verb, so it can be approved
 // without asking the user.
 //   - Program: only the bridge-issued ctl_bin (HEIMDALL_CTL_BIN), written as its
-//     absolute path, as $HEIMDALL_CTL_BIN, or as ./bin/ham-ctl (the run-dir shim) when that
+//     absolute path, as "$HEIMDALL_CTL_BIN" (quoted), or as ./bin/ham-ctl (the run-dir shim) when that
 //     resolves (against the hook's cwd) to ctl_bin. A bare `ham-ctl` goes through
 //     PATH and never matches; nothing matches when ctl_bin is unknown.
 //   - Shape: no chaining, pipe, background, subshell, substitution, redirect,
@@ -384,7 +384,9 @@ HAM_CTL_AUTO_APPROVE_VERBS :: [?]Ham_Ctl_Verb{
 @(private = "file")
 ham_ctl_head_is_ctl_bin :: proc(head, ctl_bin, cwd: string) -> bool {
 	switch head {
-	case "$HEIMDALL_CTL_BIN", "\"$HEIMDALL_CTL_BIN\"":
+	case "\"$HEIMDALL_CTL_BIN\"":
+		// Only the quoted form: unquoted and unset, `$HEIMDALL_CTL_BIN task
+		// fetch` would run `task` from PATH.
 		return true
 	case agent_runtime.CTL_SHIM_INVOCATION, agent_runtime.CTL_SHIM_PATH:
 		if strings.trim_space(cwd) == "" do return false

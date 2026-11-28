@@ -209,7 +209,7 @@ test_codex_permission_self_approves_ham_ctl :: proc(t: ^testing.T) {
 	for cmd in ([]string{
 		"./bin/ham-ctl chat read",
 		"/run/inst/bin/ham-ctl lease next",
-		"$HEIMDALL_CTL_BIN task comment t1 --body 'working'",
+		"\"$HEIMDALL_CTL_BIN\" task comment t1 --body 'working'",
 		"./bin/ham-ctl agent start-success",
 		"./bin/ham-ctl extension status",
 	}) {
@@ -227,6 +227,8 @@ test_codex_permission_self_approves_ham_ctl :: proc(t: ^testing.T) {
 		"./bin/ham-ctl review post t1 --verdict approve --on-behalf-of user",
 		"./bin/ham-ctl chat read && rm -rf /",
 		"ham-ctl chat read",
+		// S2: unquoted and unset, this runs `task` from PATH.
+		"$HEIMDALL_CTL_BIN task fetch t1",
 		// B1: installing a local plugin runs its hooks; event forges telemetry.
 		"./bin/ham-ctl extension install codex --path /tmp/evil-plugin",
 		"./bin/ham-ctl extension event --stdin",

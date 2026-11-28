@@ -518,7 +518,7 @@ test_is_ham_ctl_command_accepts_only_a_lone_allowlisted_invocation :: proc(t: ^t
 		"./bin/ham-ctl task show task_1",
 		"  ./bin/ham-ctl chat send --to user --body 'hi there'  ",
 		"bin/ham-ctl lease heartbeat",
-		"$HEIMDALL_CTL_BIN lease submit --summary done",
+		"\"$HEIMDALL_CTL_BIN\" lease submit --summary done",
 		BIN + " memory propose --title x",
 		BIN + " agent start-success",
 		BIN + " task show task_1",
@@ -601,6 +601,9 @@ test_is_ham_ctl_command_accepts_only_a_lone_allowlisted_invocation :: proc(t: ^t
 		BIN + " chat read\nrm -rf ~",
 		"cd /tmp && " + BIN + " chat read",
 		"${HEIMDALL_CTL_BIN} chat read",
+		// Unquoted, an unset variable makes the first argument the program.
+		"$HEIMDALL_CTL_BIN chat read",
+		"$HEIMDALL_CTL_BIN task fetch t1",
 		// Program identity.
 		"ham-ctl chat read",
 		"/usr/bin/ham-ctl chat read",
@@ -613,7 +616,7 @@ test_is_ham_ctl_command_accepts_only_a_lone_allowlisted_invocation :: proc(t: ^t
 	testing.expect(t, !is_ham_ctl_command("./bin/ham-ctl chat read", BIN, "/tmp/evil"), "relative path from another cwd")
 	testing.expect(t, !is_ham_ctl_command("./bin/ham-ctl chat read", BIN, ""), "relative path without cwd")
 	testing.expect(t, !is_ham_ctl_command("./.heimdall/bin/ham-ctl chat read", BIN, CWD), "the pre-bin/ shim path is not the issued ctl_bin")
-	testing.expect(t, !is_ham_ctl_command("$HEIMDALL_CTL_BIN chat read", "", CWD), "nothing matches without ctl_bin")
+	testing.expect(t, !is_ham_ctl_command("\"$HEIMDALL_CTL_BIN\" chat read", "", CWD), "nothing matches without ctl_bin")
 }
 
 @(test)

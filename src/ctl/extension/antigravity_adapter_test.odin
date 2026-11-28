@@ -337,6 +337,9 @@ test_hook_run_antigravity_auto_approves_ham_ctl :: proc(t: ^testing.T) {
 		{"./bin/ham-ctl extension install antigravity --path /tmp/evil-plugin", false},
 		{"./bin/ham-ctl extension event --stdin", false},
 		{"./bin/ham-ctl extension status", true},
+		// S2: only the quoted variable counts as the program.
+		{"\\\"$HEIMDALL_CTL_BIN\\\" chat read", true},
+		{"$HEIMDALL_CTL_BIN chat read", false},
 	}) {
 		cmd, approved := c.cmd, c.approved
 		raw_ext := fmt.tprintf(`{{"hookEventName":"PreToolUse","conversationId":"s1","permissionMode":"ask","toolCall":{{"name":"run_command","args":{{"CommandLine":"%s","Cwd":"/home/tanmay/heimdall-agent-manager"}}}}}}`, cmd)
@@ -465,15 +468,15 @@ test_antigravity_ham_ctl_allowlist_coverage_and_security :: proc(t: ^testing.T) 
 
 	// All these allowlisted coordination commands must be approved locally (0 bridge calls)
 	allowlisted := []string{
-		"$HEIMDALL_CTL_BIN chat send --to user --body 'update'",
-		"$HEIMDALL_CTL_BIN lease heartbeat --note progress",
-		"$HEIMDALL_CTL_BIN lease next",
-		"$HEIMDALL_CTL_BIN lease submit --summary done",
-		"$HEIMDALL_CTL_BIN task comment t4_permission --body working",
-		"$HEIMDALL_CTL_BIN task show t4_permission",
-		"$HEIMDALL_CTL_BIN task list",
-		"$HEIMDALL_CTL_BIN agent start-success",
-		"$HEIMDALL_CTL_BIN memory propose --scope project --title fact --content test",
+		"\\\"$HEIMDALL_CTL_BIN\\\" chat send --to user --body 'update'",
+		"\\\"$HEIMDALL_CTL_BIN\\\" lease heartbeat --note progress",
+		"\\\"$HEIMDALL_CTL_BIN\\\" lease next",
+		"\\\"$HEIMDALL_CTL_BIN\\\" lease submit --summary done",
+		"\\\"$HEIMDALL_CTL_BIN\\\" task comment t4_permission --body working",
+		"\\\"$HEIMDALL_CTL_BIN\\\" task show t4_permission",
+		"\\\"$HEIMDALL_CTL_BIN\\\" task list",
+		"\\\"$HEIMDALL_CTL_BIN\\\" agent start-success",
+		"\\\"$HEIMDALL_CTL_BIN\\\" memory propose --scope project --title fact --content test",
 	}
 
 	for cmd in allowlisted {
@@ -486,16 +489,17 @@ test_antigravity_ham_ctl_allowlist_coverage_and_security :: proc(t: ^testing.T) 
 
 	// Commands that MUST NOT be auto-approved (they must go to the bridge relay)
 	rejected := []string{
-		"$HEIMDALL_CTL_BIN shell run --cmd 'ls'",
-		"$HEIMDALL_CTL_BIN shell serve --port 8080",
-		"$HEIMDALL_CTL_BIN review post --on-behalf-of user",
-		"$HEIMDALL_CTL_BIN task update t1 --verify 'evil'",
-		"$HEIMDALL_CTL_BIN task create --title bad",
-		"$HEIMDALL_CTL_BIN chat read && rm -rf /",
-		"$HEIMDALL_CTL_BIN chat read; ls",
-		"$HEIMDALL_CTL_BIN chat read | grep foo",
-		"$HEIMDALL_CTL_BIN chat read --agent-token evil_token",
-		"$HEIMDALL_CTL_BIN chat read --bridge-endpoint tcp:evil:1234",
+		"$HEIMDALL_CTL_BIN chat read", // unquoted: unset, `chat` would run from PATH
+		"\\\"$HEIMDALL_CTL_BIN\\\" shell run --cmd 'ls'",
+		"\\\"$HEIMDALL_CTL_BIN\\\" shell serve --port 8080",
+		"\\\"$HEIMDALL_CTL_BIN\\\" review post --on-behalf-of user",
+		"\\\"$HEIMDALL_CTL_BIN\\\" task update t1 --verify 'evil'",
+		"\\\"$HEIMDALL_CTL_BIN\\\" task create --title bad",
+		"\\\"$HEIMDALL_CTL_BIN\\\" chat read && rm -rf /",
+		"\\\"$HEIMDALL_CTL_BIN\\\" chat read; ls",
+		"\\\"$HEIMDALL_CTL_BIN\\\" chat read | grep foo",
+		"\\\"$HEIMDALL_CTL_BIN\\\" chat read --agent-token evil_token",
+		"\\\"$HEIMDALL_CTL_BIN\\\" chat read --bridge-endpoint tcp:evil:1234",
 	}
 
 	for cmd in rejected {
