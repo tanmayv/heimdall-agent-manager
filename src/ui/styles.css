@@ -1197,8 +1197,12 @@ body {
   .animate-fade-slide,
   .animate-composer-swap,
   .animate-sheet-in,
+  .animate-drawer-right-in,
+  .animate-drawer-left-in,
   .animate-menu-out,
   .animate-sheet-out,
+  .animate-drawer-right-out,
+  .animate-drawer-left-out,
   .animate-fade-in,
   .animate-fade-out {
     animation-duration: 1ms !important;

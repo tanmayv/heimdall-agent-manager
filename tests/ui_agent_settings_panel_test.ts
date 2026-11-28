@@ -90,32 +90,64 @@ async function loadPanelModules() {
   (globalThis as any).__panelModules = { ...hook, ...panel };
 }
 
-test('docked: gear toggles, focus goes to the heading and back to the gear, Esc does not close, state persists', async () => {
+async function finishDockedExit(doc: Document, win: any) {
+  const shell = q(doc, 'agent-panel-dock-shell');
+  assert.ok(shell, 'dock shell exists');
+  const ev = new win.Event('transitionend', { bubbles: true });
+  Object.defineProperty(ev, 'propertyName', { value: 'width' });
+  await act(async () => { shell!.dispatchEvent(ev); });
+}
+
+async function finishDrawerExit(doc: Document, win: any) {
+  const dialog = q(doc, 'agent-panel-dialog');
+  assert.ok(dialog, 'drawer dialog exists while closing');
+  const ev = new win.Event('animationend', { bubbles: true });
+  await act(async () => { dialog!.dispatchEvent(ev); });
+}
+
+test('docked: gear toggles, header is 48px single-row, focus moves, slides out on close, Esc does not close, state persists', async () => {
   await withDom(1440, async ({ doc, render, win }) => {
     await loadPanelModules();
     await render(React.createElement(Harness));
     assert.equal(q(doc, 'agent-panel'), null, 'closed by default');
+    const shell = q(doc, 'agent-panel-dock-shell')!;
+    assert.equal(shell.getAttribute('data-state'), 'closed');
+    assert.ok(shell.className.includes('w-0') && shell.className.includes('transition-[width]'));
+
     await click(q(doc, 'gear'));
     const panel = q(doc, 'agent-panel')!;
     assert.ok(panel, 'opens');
     assert.equal(panel.tagName, 'ASIDE');
     assert.equal(panel.getAttribute('data-mode'), 'docked');
+    assert.equal(shell.getAttribute('data-state'), 'open');
+    assert.ok(shell.className.includes('w-[400px]'));
+
+    const header = q(doc, 'agent-panel-header')!;
+    assert.ok(header.className.includes('h-12') && header.className.includes('items-center'), 'docked header matches 48px top chrome');
     const heading = doc.getElementById(panel.getAttribute('aria-labelledby')!)!;
     assert.equal(heading.textContent, 'Agent', 'aside is labelled by the Agent heading');
     assert.equal(doc.activeElement, heading, 'focus moves to the heading');
-    assert.equal(q(doc, 'agent-panel-subtitle')!.textContent, 'coordinator #41 · heimdall');
+    const subtitle = q(doc, 'agent-panel-subtitle')!;
+    assert.equal(subtitle.textContent, 'coordinator #41 · heimdall');
+    assert.equal(header.contains(subtitle), false, 'subtitle sits in the body so the header stays 48px');
     assert.equal(q(doc, 'gear')!.getAttribute('aria-expanded'), 'true');
 
     await act(async () => { doc.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
-    assert.ok(q(doc, 'agent-panel'), 'Esc does not close the docked panel');
+    assert.equal(q(doc, 'agent-panel')!.getAttribute('data-state'), 'open', 'Esc does not close the docked panel');
 
     const { readAgentSettingsPanelOpen } = (globalThis as any).__panelModules;
     assert.equal(readAgentSettingsPanelOpen(), true, 'docked open state is persisted');
 
     await click(q(doc, 'agent-panel-close'));
-    assert.equal(q(doc, 'agent-panel'), null);
+    assert.equal(shell.getAttribute('data-state'), 'closing', 'docked panel animates slide-out before unmounting');
+    assert.ok(shell.className.includes('w-0'));
+    assert.equal(q(doc, 'agent-panel')!.getAttribute('data-state'), 'closing');
     assert.equal(doc.activeElement, q(doc, 'gear'), 'focus returns to the gear');
     assert.equal(readAgentSettingsPanelOpen(), false);
+
+    await finishDockedExit(doc, win);
+    assert.equal(q(doc, 'agent-panel'), null, 'unmounts after width transition ends');
+    assert.equal(shell.getAttribute('data-state'), 'closed');
   });
 });
 
@@ -129,22 +161,29 @@ test('docked: a persisted open panel is restored on mount without stealing focus
   });
 });
 
-test('drawer (<1280): Esc and the scrim close it; opening is not persisted', async () => {
+test('drawer (<1280): Esc and the scrim close it with slide-out animation; opening is not persisted', async () => {
   await withDom(1180, async ({ doc, render, win }) => {
     await loadPanelModules();
     await render(React.createElement(Harness));
     await click(q(doc, 'gear'));
     assert.equal(q(doc, 'agent-panel')!.getAttribute('data-mode'), 'drawer');
+    assert.ok(q(doc, 'agent-panel-header')!.className.includes('h-12'));
+    assert.ok(q(doc, 'agent-panel-dialog')!.className.includes('animate-drawer-right-in'));
     assert.equal((globalThis as any).__panelModules.readAgentSettingsPanelOpen(), false, 'drawer open is transient');
     await act(async () => { doc.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
-    assert.equal(q(doc, 'agent-panel'), null, 'Esc closes the drawer');
+    assert.ok(q(doc, 'agent-panel-dialog')!.className.includes('animate-drawer-right-out'), 'drawer plays slide-out animation');
+    assert.equal(q(doc, 'agent-panel-dialog')!.parentElement!.getAttribute('data-state'), 'closing');
     assert.equal(doc.activeElement, q(doc, 'gear'));
+    await finishDrawerExit(doc, win);
+    assert.equal(q(doc, 'agent-panel'), null, 'Esc closes the drawer');
 
     await click(q(doc, 'gear'));
     const backdrop = q(doc, 'agent-panel-dialog')!.parentElement!;
     await act(async () => { backdrop.dispatchEvent(new win.MouseEvent('mousedown', { bubbles: true })); });
-    assert.equal(q(doc, 'agent-panel'), null, 'the backdrop closes the drawer');
+    assert.equal(backdrop.getAttribute('data-state'), 'closing', 'the backdrop starts closing the drawer');
     assert.equal(doc.activeElement, q(doc, 'gear'));
+    await finishDrawerExit(doc, win);
+    assert.equal(q(doc, 'agent-panel'), null, 'the backdrop unmounts the drawer after exit animation');
   });
 });
 
@@ -188,8 +227,9 @@ for (const width of [1180, 390]) {
       assert.equal(doc.activeElement, last);
 
       await act(async () => { doc.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
-      assert.equal(q(doc, 'agent-panel'), null);
       assert.equal(doc.activeElement, q(doc, 'gear'), 'focus returns to the gear');
+      await finishDrawerExit(doc, win);
+      assert.equal(q(doc, 'agent-panel'), null);
     });
   });
 }
@@ -215,14 +255,19 @@ test('drawer: a persisted docked preference does not open the drawer on load; wi
   });
 });
 
-test('mobile page (<768): full-screen page with a 44px back button, Agent settings title and subtitle', async () => {
-  await withDom(390, async ({ doc, render }) => {
+test('mobile page (<768): full-screen page with a 44px back button, min-h-14 header, subtitle, and slide-out exit', async () => {
+  await withDom(390, async ({ doc, render, win }) => {
     await loadPanelModules();
     await render(React.createElement(Harness));
     await click(q(doc, 'gear'));
     const panel = q(doc, 'agent-panel')!;
     assert.equal(panel.getAttribute('data-mode'), 'page');
-    assert.match(q(doc, 'agent-panel-dialog')!.className, /!max-w-none/, 'full width');
+    const dialog = q(doc, 'agent-panel-dialog')!;
+    assert.match(dialog.className, /!max-w-none/, 'full width');
+    assert.ok(dialog.className.includes('animate-drawer-right-in'), 'page slides in from right');
+    const header = q(doc, 'agent-panel-header')!;
+    assert.ok(header.className.includes('min-h-14'), 'mobile page header stays min-h-14 (56px)');
+    assert.equal(header.contains(q(doc, 'agent-panel-subtitle')!), true, 'mobile page keeps subtitle in header');
     const back = q(doc, 'agent-panel-back')!;
     assert.match(back.className, /\bh-11\b/, 'back button is 44px');
     assert.equal(back.getAttribute('aria-label'), 'Back to the conversation');
@@ -230,7 +275,33 @@ test('mobile page (<768): full-screen page with a 44px back button, Agent settin
     assert.equal(heading.textContent, 'Agent settings');
     assert.equal(doc.activeElement, heading);
     await click(back);
+    assert.ok(q(doc, 'agent-panel-dialog')!.className.includes('animate-drawer-right-out'), 'page slides out to right');
+    assert.equal(doc.activeElement, q(doc, 'gear'));
+    await finishDrawerExit(doc, win);
     assert.equal(q(doc, 'agent-panel'), null);
+  });
+});
+
+test('docked: reduced motion unmounts immediately on close and subtitle precedes runtime', async () => {
+  await withDom(1440, async ({ doc, render, win }) => {
+    win.matchMedia = (query: string) => ({
+      matches: query === '(prefers-reduced-motion: reduce)',
+      media: query,
+      addEventListener() {},
+      removeEventListener() {},
+    });
+    await loadPanelModules();
+    await render(React.createElement(Harness));
+    await click(q(doc, 'gear'));
+    const subtitle = q(doc, 'agent-panel-subtitle')!;
+    const runtime = q(doc, 'runtime-slot')!;
+    assert.ok(
+      Boolean(subtitle.compareDocumentPosition(runtime) & win.Node.DOCUMENT_POSITION_FOLLOWING),
+      'subtitle appears above RuntimeSection in panel body',
+    );
+    await click(q(doc, 'agent-panel-close'));
+    assert.equal(q(doc, 'agent-panel'), null, 'reduced motion unmounts docked panel immediately');
+    assert.equal(q(doc, 'agent-panel-dock-shell')!.getAttribute('data-state'), 'closed');
     assert.equal(doc.activeElement, q(doc, 'gear'));
   });
 });

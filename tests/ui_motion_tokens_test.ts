@@ -22,10 +22,14 @@ const UTILITIES: Record<string, string> = {
   'composer-swap': 'composerSwap var(--duration-slow) var(--ease-emphasized)',
   breathe: 'breathe 1.6s ease-in-out infinite',
   'sheet-in': 'sheetIn var(--duration-slow) var(--ease-emphasized)',
+  'drawer-right-in': 'drawerRightIn var(--duration-base) var(--ease-emphasized)',
+  'drawer-left-in': 'drawerLeftIn var(--duration-base) var(--ease-emphasized)',
   // Added by the SentenceToken task: exits (the entrance reversed at the close
   // timing, motion spec #6/#18) and the bottom-sheet scrim fade (#17/#18).
   'menu-out': 'menuIn var(--duration-fast) var(--ease-standard) reverse forwards',
   'sheet-out': 'sheetIn var(--duration-base) var(--ease-standard) reverse forwards',
+  'drawer-right-out': 'drawerRightIn var(--duration-base) var(--ease-standard) reverse forwards',
+  'drawer-left-out': 'drawerLeftIn var(--duration-base) var(--ease-standard) reverse forwards',
   'fade-in': 'fade var(--duration-base) var(--ease-emphasized)',
   'fade-out': 'fade var(--duration-base) var(--ease-standard) reverse forwards',
 };
@@ -63,6 +67,8 @@ test('the launcher keyframes match the redesign reference values', () => {
       '50%': { opacity: '1', transform: 'none' },
     },
     sheetIn: { from: { transform: 'translateY(100%)' }, to: { transform: 'none' } },
+    drawerRightIn: { from: { transform: 'translateX(100%)' }, to: { transform: 'none' } },
+    drawerLeftIn: { from: { transform: 'translateX(-100%)' }, to: { transform: 'none' } },
     fade: { from: { opacity: '0' }, to: { opacity: '1' } },
   });
 });
