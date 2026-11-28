@@ -412,11 +412,33 @@ bridge_models_probe_kind :: proc(provider: string) -> contracts.Provider_Model_P
 }
 
 // bridge_models_acp_descriptor is the ACP recipe of a provider whose model probe
-// is ACP and whose recipe opts in to a system-launched metadata-only session.
+// is ACP and whose recipe opts in to a metadata-only session probe.
 bridge_models_acp_descriptor :: proc(provider: string) -> (contracts.ACP_Provider_Descriptor, bool) {
-	if bridge_models_probe_kind(provider) != .ACP do return {}, false
 	d, found := contracts.acp_provider_descriptor(provider)
-	return d, found && d.discover_models_via_acp && d.protocol == .ACP && d.launch == .System
+	return d, found && bridge_models_acp_eligible(bridge_models_probe_kind(provider), d)
+}
+
+// Eligibility depends on the protocol and the opt-in, not on whether the
+// runtime is a system CLI or an installed adapter. The Codex app-server has its
+// own model/list probe and does not answer ACP config options.
+bridge_models_acp_eligible :: proc(probe: contracts.Provider_Model_Probe, d: contracts.ACP_Provider_Descriptor) -> bool {
+	return probe == .ACP && d.discover_models_via_acp && d.protocol == .ACP
+}
+
+// The probe child's argv: a system CLI runs itself; an adapter runs its managed
+// package bin under root (the provider CLI reaches it via executable_env).
+bridge_models_acp_argv :: proc(d: contracts.ACP_Provider_Descriptor, binary, root: string) -> ([]string, bool) {
+	if d.launch == .Adapter && (root == "" || !acp_adapter_files_valid(root, d.provider)) do return nil, false
+	return acp_provider_launch_argv(d, root, binary)
+}
+
+// The descriptor's fixed environment, plus the resolved provider CLI for an
+// adapter (the same pairs a managed ACP launch sets).
+bridge_models_acp_env_plan :: proc(d: contracts.ACP_Provider_Descriptor, binary: string) -> Profile_Env_Plan {
+	plan := Profile_Env_Plan{}
+	for pair in d.env do append(&plan.set, pair)
+	if d.executable_env != "" && binary != "" do append(&plan.set, [2]string{d.executable_env, binary})
+	return plan
 }
 
 // bridge_models_probe_command builds the probe child's argv and its first
@@ -431,7 +453,12 @@ bridge_models_probe_command :: proc(provider, binary: string, launch_args: []str
 	case .ACP:
 		descriptor, acp := bridge_models_acp_descriptor(provider)
 		if !acp do return nil, "", false
-		acp_argv, built := acp_provider_launch_argv(descriptor, "", binary)
+		root := ""
+		if descriptor.launch == .Adapter {
+			owned := acp_adapter_root(provider)
+			root = strings.clone(owned, context.temp_allocator); delete(owned)
+		}
+		acp_argv, built := bridge_models_acp_argv(descriptor, binary, root)
 		if !built do return nil, "", false
 		return acp_argv, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"heimdall-model-discovery","version":"1"}}}`, true
 	case .Claude_Control:
@@ -504,9 +531,7 @@ bridge_models_refresh_worker :: proc(th: ^thread.Thread) {
 	remaining := time.Duration(job.deadline_ns - time.to_unix_nanoseconds(time.now()))
 	env, env_ok := profile_child_env(&job.profile)
 	if d, acp := bridge_models_acp_descriptor(job.provider); acp && env_ok {
-		plan := Profile_Env_Plan{}
-		for pair in d.env do append(&plan.set, pair)
-		env = profile_apply_env_plan(env, plan)
+		env = profile_apply_env_plan(env, bridge_models_acp_env_plan(d, job.path))
 	}
 	models := make([dynamic]Bridge_Discovered_Model)
 	state := "error"

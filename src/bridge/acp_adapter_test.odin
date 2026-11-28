@@ -704,3 +704,43 @@ acp_kiro_system_status_recheck_and_launch :: proc(t: ^testing.T) {
     }
     testing.expect_value(t, seen, 2)
 }
+
+// Model discovery over ACP no longer requires a system CLI: an adapter-launched
+// descriptor that opts in probes through its installed package bin, with the
+// provider CLI passed through executable_env like a managed launch.
+@(test)
+acp_model_discovery_accepts_adapter_launched_descriptor :: proc(t: ^testing.T) {
+    st := p1c_test_setup(t); defer p1c_test_teardown(st)
+    context.allocator = context.temp_allocator
+    d := contracts.ACP_CLAUDE_DESCRIPTOR; d.discover_models_via_acp = true
+    testing.expect(t, d.launch == .Adapter && contracts.acp_descriptor_shape_valid(d))
+    testing.expect(t, bridge_models_acp_eligible(.ACP, d))
+    testing.expect(t, !bridge_models_acp_eligible(.Claude_Control, d))
+    codex := contracts.ACP_CODEX_DESCRIPTOR; codex.discover_models_via_acp = true
+    testing.expect(t, !bridge_models_acp_eligible(.ACP, codex), "the app-server keeps its own model/list probe")
+    root := profile_join(st.dir, "claude-stage")
+    _, built := bridge_models_acp_argv(d, "/profile/claude", root)
+    testing.expect(t, !built, "no probe until the adapter is installed")
+    _, built = bridge_models_acp_argv(d, "/profile/claude", "")
+    testing.expect(t, !built)
+    pkg := profile_join(root, "node_modules/" + ACP_CLAUDE_PACKAGE)
+    bin := acp_adapter_bin(root, "claude")
+    p1c_put(t, profile_join(pkg, "package.json"), `{"name":"@agentclientprotocol/claude-agent-acp","version":"0.108.0","bin":{"claude-agent-acp":"dist/cli.js"}}`)
+    p1c_put(t, profile_join(root, "package-lock.json"), strings.concatenate({`{"packages":{"node_modules/@agentclientprotocol/claude-agent-acp":{"version":"0.108.0","integrity":"`, ACP_CLAUDE_INTEGRITY, `"}}}`}))
+    p1c_put(t, profile_join(pkg, "dist/cli.js"), "#!/bin/sh\nexit 0\n", true)
+    bridge_make_directory_all(filepath.dir(bin))
+    testing.expect(t, os.symlink("../@agentclientprotocol/claude-agent-acp/dist/cli.js", bin) == nil)
+    argv, ok := bridge_models_acp_argv(d, "/profile/claude", root)
+    testing.expect(t, ok && len(argv) == 1 && argv[0] == bin)
+    plan := bridge_models_acp_env_plan(d, "/profile/claude")
+    testing.expect(t, len(plan.set) == 2 && plan.set[0] == [2]string{"CLAUDE_AGENT_ACP_PROTOCOL", "v1"} && plan.set[1] == [2]string{"CLAUDE_CODE_EXECUTABLE", "/profile/claude"})
+    // System CLIs keep their plain argv and environment.
+    kiro := contracts.ACP_KIRO_DESCRIPTOR
+    argv, ok = bridge_models_acp_argv(kiro, "/opt/kiro-cli", "")
+    testing.expect(t, ok && len(argv) == 4 && argv[0] == "/opt/kiro-cli")
+    testing.expect_value(t, len(bridge_models_acp_env_plan(kiro, "/opt/kiro-cli").set), 0)
+    // The registered Claude runtime keeps its bespoke control-protocol probe.
+    _, acp := bridge_models_acp_descriptor("claude")
+    testing.expect(t, !acp)
+    testing.expect_value(t, bridge_models_source("claude"), "claude_control")
+}

@@ -38,7 +38,7 @@ ACP_Provider_Descriptor :: struct {
     // its `--version` format and auth guidance live in the provider registry
     // (provider_descriptor(provider)).
     system_os: []string,
-    discover_models_via_acp: bool, // opt in after a metadata-only session probe is verified
+    discover_models_via_acp: bool, // ACP only; opt in after a metadata-only session probe is verified
     // System only. agent_default_model is the catalog model id that keeps the
     // agent's own default model (no session/set_config_option). With
     // bootstrap_resource_link, an agent that does not advertise embeddedContext
@@ -150,7 +150,8 @@ acp_descriptor_shape_valid :: proc(d: ACP_Provider_Descriptor) -> bool {
        strings.contains_any(d.bootstrap_filename, "/\\") || strings.contains(d.bootstrap_filename, "..") ||
        d.model_category == "" { return false }
     if d.protocol != .ACP && d.protocol != .Codex_App_Server do return false
-    if d.discover_models_via_acp && (d.protocol != .ACP || d.launch != .System) do return false
+    // Discovery opens an ACP session, whatever launches the runtime.
+    if d.discover_models_via_acp && d.protocol != .ACP do return false
     if d.legacy != {} && (d.launch != .Adapter || d.legacy.id == "" || d.legacy.revision < 1 || !exact_adapter_version(d.legacy.version) ||
        d.legacy.root == "" || strings.has_prefix(d.legacy.root, "/") || strings.contains(d.legacy.root, "..")) { return false }
     switch d.launch {

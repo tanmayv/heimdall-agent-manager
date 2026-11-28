@@ -201,13 +201,13 @@ provider_keeps_bootstrap_read_trait :: proc(t: ^testing.T) {
 }
 
 // The registry's ACP model probe and the ACP recipe's opt-in never disagree:
-// a provider probes models over ACP exactly when its ACP recipe is a
-// system-launched ACP session that opts in to metadata-only discovery.
+// a provider probes models over ACP exactly when its ACP recipe is an ACP
+// session (system CLI or adapter) that opts in to metadata-only discovery.
 @(test)
 provider_model_probe_agrees_with_acp_recipe :: proc(t: ^testing.T) {
 	for d in provider_descriptors() {
 		acp, found := acp_provider_descriptor(d.provider)
-		recipe_discovers := found && acp.discover_models_via_acp && acp.protocol == .ACP && acp.launch == .System
+		recipe_discovers := found && acp.discover_models_via_acp && acp.protocol == .ACP
 		testing.expectf(t, (d.model_probe == .ACP) == recipe_discovers, "%s: model_probe %v, ACP recipe discovers %v", d.provider, d.model_probe, recipe_discovers)
 	}
 	for acp in acp_provider_descriptors {

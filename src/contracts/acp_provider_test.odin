@@ -227,6 +227,11 @@ acp_descriptor_legacy_runtime_is_descriptor_data :: proc(t: ^testing.T) {
         invalid = d; invalid.legacy.root = root
         testing.expect(t, !acp_descriptor_shape_valid(invalid))
     }
+    // Model discovery is gated on the protocol, not the launch kind.
+    discovering := d; discovering.discover_models_via_acp = true
+    testing.expect(t, acp_descriptor_shape_valid(discovering))
+    discovering = ACP_CODEX_DESCRIPTOR; discovering.discover_models_via_acp = true
+    testing.expect(t, !acp_descriptor_shape_valid(discovering))
     testing.expect_value(t, ACP_PROTOCOL_NAMES[.ACP], "acp")
     testing.expect_value(t, ACP_PROTOCOL_NAMES[.Codex_App_Server], "codex_app_server")
 }
