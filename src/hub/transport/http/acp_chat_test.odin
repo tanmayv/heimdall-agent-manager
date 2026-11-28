@@ -53,8 +53,8 @@ t5_assistant_ciphertext_retry_survives_vault_rotation :: proc(t:^testing.T) {
     _,found,_:=iface.content_get_message(&f.mq.repo,input.message_id)
     testing.expect(t,!found,"G12: a relayed segment is never stored")
 }
-acp_chat_open :: proc(t:^testing.T,f:^ACP_Chat_Fixture) {
-    mq_http_open(t,&f.mq,"acp")
+acp_chat_open :: proc(t:^testing.T,f:^ACP_Chat_Fixture,db_path := ":memory:") {
+    mq_http_open(t,&f.mq,"acp",db_path)
     f.repos.content=f.mq.repo; f.repos.agents=f.mq.base.ag_repo
     f.factory=sqlite.new_unit_of_work_factory(&f.impl,&f.mq.base.conn,&f.repos)
     f.vault_repo={get_directory=acp_chat_directory,list_devices=acp_chat_devices}

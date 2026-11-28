@@ -37,11 +37,15 @@ MQ_HTTP_Base :: struct {
 	owner_user_id, bridge_id, bridge_token: string,
 }
 
-mq_http_base_open :: proc(t: ^testing.T) -> ^MQ_HTTP_Base {
+mq_http_base_open :: proc(t: ^testing.T, db_path := ":memory:") -> ^MQ_HTTP_Base {
 	f := new(MQ_HTTP_Base)
 	open_ok: bool
-	f.conn, open_ok, _ = sqlite.open(":memory:")
+	f.conn, open_ok, _ = sqlite.open(db_path)
 	testing.expect(t, open_ok, "database open")
+	if db_path != ":memory:" {
+		testing.expect(t, sqlite.exec(&f.conn, "PRAGMA journal_mode=WAL;"), "WAL")
+		testing.expect(t, sqlite.exec(&f.conn, "PRAGMA synchronous=NORMAL;"), "synchronous")
+	}
 	migrated, _ := sqlite.run_migrations(&f.conn)
 	testing.expect(t, migrated, "migrations")
 	f.br_repo = sqlite.new_bridge_repository(&f.br_impl, &f.conn)
@@ -108,8 +112,8 @@ mq_user_activity :: proc(ctx: rawptr, instance_id: string) {
 	a.last = strings.clone(instance_id, context.temp_allocator)
 }
 
-mq_http_open :: proc(t: ^testing.T, f: ^MQ_HTTP_Fixture, tag: string) {
-	f.base = mq_http_base_open(t)
+mq_http_open :: proc(t: ^testing.T, f: ^MQ_HTTP_Fixture, tag: string, db_path := ":memory:") {
+	f.base = mq_http_base_open(t, db_path)
 	f.repo = sqlite.new_content_repository(&f.impl, &f.base.conn)
 	f.svc = content_service.new_content_service(&f.repo, &f.base.ag_repo, nil, nil, nil, &f.base.clock, &f.base.ids)
 	f.svc.bridge_command_sink = {ctx = f, send_runtime_command = mq_http_notification}
