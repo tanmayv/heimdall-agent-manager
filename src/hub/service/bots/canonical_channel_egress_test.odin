@@ -112,7 +112,7 @@ test_canonical_explicit_reply_resolves_and_records_unknown_without_resending :: 
 	second_body, second_proof, _ := channelvault.seal_authored(second,"second reply",&f.kr)
 	row, have_row, row_err := content.send_agent_message_with_id(&svc,auth,inst.agent_instance_id,{body=second_body,reply_to_message_id=channel_id},second.reply_message_id,&inst,{channel_id,second_proof})
 	if !testing.expect(t,have_row && row_err.code==.None,row_err.message) do return
-	claim, claim_err := repo.channel_reply_part_claim(repo.ctx,row.message_id,0)
+	claim, claim_err := repo.channel_reply_part_claim(repo.ctx,row.message_id,0,"")
 	testing.expect(t,claim=="claimed" && claim_err.code==.None)
 	f.locked=true
 	opens := f.exchanges

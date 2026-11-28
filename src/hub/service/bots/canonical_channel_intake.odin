@@ -32,7 +32,7 @@ accept_canonical_channel_text :: proc(s: ^Bots_Service, svc: ^content.Content_Se
 	defer domain.bot_web_activation_destroy(&activation)
 	if read_err.code != .None do return {.Retry,"",{}},read_err
 	if !activated do return {.Legacy,"",{}},{}
-	if !activation.enabled || binding.external_chat_id!=event.external_chat_id || binding.external_user_id!=event.external_user_id ||
+	if !activation.enabled || !canonical_channel_sender_matches(provider,binding.external_chat_id,binding.external_user_id,event) ||
 	   !bots_gate_on(s.experiments,owner) {
 		return {.Handled,"",{}},{}
 	}
@@ -47,6 +47,9 @@ accept_canonical_channel_text :: proc(s: ^Bots_Service, svc: ^content.Content_Se
 	// Provider timestamps can be second-resolution. Accept the binding second;
 	// the durable provider update identity then prevents cross-binding replay.
 	if !time_valid || !bind_time_valid || received_ms/1000 < bound_ms/1000 do return {.Handled,"",{}},{}
+	// WhatsApp event IDs are opaque. Fail closed for the pairing second
+	// rather than admitting an old queued event on an unprovable ordering.
+	if provider==domain.CHANNEL_PROVIDER_WHATSAPP && received_ms/1000==bound_ms/1000 do return {.Handled,"",{}},{}
 	if provider==domain.CHANNEL_PROVIDER_TELEGRAM && received_ms/1000==bound_ms/1000 && grant.pairing_update_key!="" &&
 	   !telegram_update_after_pairing(event.update_key,grant.pairing_update_key) {
 		return {.Handled,"",{}},{}
@@ -98,7 +101,7 @@ accept_canonical_channel_text :: proc(s: ^Bots_Service, svc: ^content.Content_Se
 	if source_err.code != .None do return {.Retry,"",{}},source_err
 	if prepared != sealed_source || prepared.request.activation_generation != activation.generation || prepared.request.binding_generation != grant.binding_generation ||
 	   prepared.request.conversation_id != activation.conversation_id || prepared.provider != provider ||
-	   prepared.recipient != event.external_chat_id || prepared.external_user_id != event.external_user_id {
+	   !canonical_channel_sender_matches(provider,prepared.recipient,prepared.external_user_id,event) {
 		return {.Retry,"",{}},bots_detail_error(.Conflict,"channel_origin_changed")
 	}
 	local := svc^
@@ -125,6 +128,11 @@ accept_canonical_channel_text :: proc(s: ^Bots_Service, svc: ^content.Content_Se
 	}
 	if updated, update_err := iface.content_set_authenticated_channel_origin(local.content,m.owner_user_id,m.conversation_id,id,provider,binding.binding_id); !updated {
 		return {.Retry,"",{}},update_err
+	}
+	if provider==domain.CHANNEL_PROVIDER_WHATSAPP && uow.repos.bots.canonical_binding_touch!=nil {
+		if touch_err := uow.repos.bots.canonical_binding_touch(uow.repos.bots.ctx,binding.binding_id,event.provider_time); touch_err.code!=.None {
+			return {.Retry,"",{}},touch_err
+		}
 	}
 	committed, commit_err := bots_uow_commit(&uow)
 	if !committed do return {.Retry,"",{}},commit_err

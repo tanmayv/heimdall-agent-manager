@@ -55,7 +55,7 @@ export default function BotsPanel({ onOpenTerminal }: { onOpenTerminal?: () => v
         {query.isError && !absent ? <Alert tone="danger">{apiErrorText(query.error)}</Alert> : null}
         {error ? <Alert tone="danger">{error}</Alert> : null}
         {fresh && <Panel title="Shared web conversation" className="space-y-3">
-          <Text>{fresh.enabled ? (bot?.telegram.configured ? (bot.telegram.binding ? 'Your bot uses the shared conversation for web and Telegram.' : 'Your bot uses the shared conversation. Pair Telegram again to receive new messages here.') : 'Your bot uses the shared web conversation. Mobile channels are not available for this conversation yet.')
+          <Text>{fresh.enabled ? (bot?.telegram.configured ? (bot.telegram.binding ? 'Your bot uses the shared conversation for web and Telegram.' : 'Your bot uses the shared conversation. Pair Telegram again to receive new messages here.') : bot?.whatsapp.configured ? (bot.whatsapp.binding ? 'Your bot uses the shared conversation for web and WhatsApp.' : 'Your bot uses the shared conversation. Pair WhatsApp again to receive new messages here.') : 'Your bot uses the shared web conversation. Mobile channels are not available for this conversation yet.')
             : fresh.generation ? 'Your shared conversation is paused. Its messages are kept.'
             : 'You can choose to start an empty bot conversation in the shared web pane.'}</Text>
           <a className="text-primary underline" href={buildRouteHash('/bot', '')}>
@@ -66,6 +66,7 @@ export default function BotsPanel({ onOpenTerminal }: { onOpenTerminal?: () => v
         </Panel>}
         {fresh?.generation ? <>
           {fresh.enabled && bot?.telegram.configured && <BotTelegramCard key={bot.bot_id} telegram={bot.telegram} />}
+          {fresh.enabled && bot?.whatsapp.configured && <BotWhatsAppCard key={bot.bot_id + '-whatsapp'} whatsapp={bot.whatsapp} />}
           <BotPlacementEditor />
         </> : absent ? <EmptyState
           description={<Text data-debug-id="settings-bots-empty" tone="muted">You don't have a bot yet. Your bot runs on your machines and answers you on Telegram or WhatsApp.</Text>}

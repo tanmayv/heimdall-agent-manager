@@ -48,6 +48,10 @@ bots_whatsapp_entitlement_sweep :: proc(s: ^Bots_Service) {
 		binding, bound, binding_err := iface.binding_get_active_by_owner(s.repo, bot.owner_user_id, domain.CHANNEL_PROVIDER_WHATSAPP)
 		domain.channel_binding_destroy(&binding)
 		if binding_err.code != .None || !bound do continue
-		_, _ = bots_whatsapp_invite_only_unbind(s, bot.owner_user_id, false)
+		if canonical_channel_enabled(s,domain.CHANNEL_PROVIDER_WHATSAPP,bot.owner_user_id) && bots_legacy_guard(s,bot.owner_user_id).code==.Conflict {
+			_ = bots_disconnect_canonical_owner(s,bot.owner_user_id,domain.CHANNEL_PROVIDER_WHATSAPP)
+		} else {
+			_, _ = bots_whatsapp_invite_only_unbind(s, bot.owner_user_id, false)
+		}
 	}
 }

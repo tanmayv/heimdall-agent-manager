@@ -53,7 +53,7 @@ bots_disconnect_canonical_chat :: proc(s: ^Bots_Service, provider: string, event
 	if err.code!=.None || !found do return false,err
 	_, fresh, grant_err := iface.bot_channel_conversion_binding_get(s.repo,binding.binding_id)
 	if grant_err.code!=.None || !fresh do return false,grant_err
-	if binding.external_chat_id!=event.external_chat_id || binding.external_user_id!=event.external_user_id do return true,{}
+	if !canonical_channel_sender_matches(provider,binding.external_chat_id,binding.external_user_id,event) do return true,{}
 	sync.mutex_lock(&s.mutex)
 	defer sync.mutex_unlock(&s.mutex)
 	// Revoke the exact original ID. A concurrent re-pair is never revoked.
@@ -82,7 +82,9 @@ admit_canonical_pairing_notice :: proc(s: ^Bots_Service, provider: string, updat
 	grant, have, grant_err := iface.bot_channel_conversion_binding_get(s.repo,binding.binding_id)
 	if grant_err.code!=.None || !have do return false
 	generation, mode_err := pairing_activation_generation(s,owner,provider)
-	return mode_err.code==.None && generation>0 && generation==grant.activation_generation && bots_gate_on(s.experiments,owner)
+	entitled, entitlement_err := bots_channel_entitled(s,provider,owner)
+	return mode_err.code==.None && generation>0 && generation==grant.activation_generation && bots_gate_on(s.experiments,owner) &&
+		entitled && entitlement_err.code==.None && !bots_window_closed(bots_adapter(s,provider),binding,bots_now_ms(s))
 }
 
 bots_disconnect_canonical_owner :: proc(s: ^Bots_Service, owner, provider: string) -> domain.Domain_Error {

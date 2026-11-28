@@ -16,9 +16,14 @@ Bot_Repo_SQLite :: struct {
 new_bot_repository :: proc(impl: ^Bot_Repo_SQLite, conn: ^Conn) -> iface.Bot_Repository {
 	impl.conn = conn
 	return iface.Bot_Repository {
+		canonical_whatsapp_receipt_store = canonical_whatsapp_receipt_store_sqlite,
+		canonical_whatsapp_receipt_pending = canonical_whatsapp_receipt_pending_sqlite,
+		canonical_whatsapp_receipt_apply = canonical_whatsapp_receipt_apply_sqlite,
+		canonical_whatsapp_receipt_purge = canonical_whatsapp_receipt_purge_sqlite,
 		channel_queue_feedback = bot_channel_queue_feedback_sqlite,
 		channel_feedback_pending = bot_channel_feedback_pending_sqlite,
 		channel_feedback_claim = bot_channel_feedback_claim_sqlite,
+		canonical_binding_touch = canonical_binding_touch_sqlite,
 		channel_reply_enqueue = bot_channel_reply_enqueue_sqlite,
 		channel_reply_recover = bot_channel_reply_recover_sqlite,
 		channel_reply_pending = bot_channel_reply_pending_sqlite,

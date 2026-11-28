@@ -20,6 +20,7 @@ Bots_Service :: struct {
 	channel_vault_directory: ^iface.Vault_Directory_Repository,
 	channel_vault_exchange: Channel_Vault_Exchange,
 	canonical_telegram: bool,
+	canonical_whatsapp_owner: string,
 	canonical_content: ^content.Content_Service,
  placement: ^placement.Service,
 	ui_origin: string,
@@ -51,8 +52,21 @@ Bots_Service :: struct {
 	notices: [dynamic]Bot_Notice,
 }
 
-canonical_channel_enabled :: proc(s: ^Bots_Service, provider: string) -> bool {
-	return provider==domain.CHANNEL_PROVIDER_TELEGRAM && s.canonical_telegram
+canonical_channel_enabled :: proc(s: ^Bots_Service, provider: string, owner := "") -> bool {
+	switch provider {
+	case domain.CHANNEL_PROVIDER_TELEGRAM: return s.canonical_telegram
+	case domain.CHANNEL_PROVIDER_WHATSAPP:
+		return s.canonical_whatsapp_owner!="" && (owner=="" || s.canonical_whatsapp_owner==owner)
+	}
+	return false
+}
+
+// WhatsApp sometimes rotates the address form in the signed inbound event.
+// Only the same stable provider user may use that alias. It never replaces
+// the immutable address used for an outbound reply.
+canonical_channel_sender_matches :: proc(provider, address, user: string, event: channel.Inbound) -> bool {
+	return user!="" && event.external_user_id==user && event.external_chat_id!="" &&
+		(address==event.external_chat_id || provider==domain.CHANNEL_PROVIDER_WHATSAPP)
 }
 
 bots_adapter :: proc(s: ^Bots_Service, provider: string) -> ^channel.Channel_Adapter {
@@ -155,28 +169,28 @@ bots_view_json :: proc(s: ^Bots_Service, owner: string) -> (string, domain.Domai
 		state, live, state_err := iface.bot_web_activation_get(s.repo,owner)
 		defer domain.bot_web_activation_destroy(&state)
 		if state_err.code!=.None do return "",state_err
-		if live && state.enabled && s.canonical_telegram && s.adapter!=nil {
-			view.telegram.configured=true
-			b, bound, bind_err := iface.binding_get_active_by_owner(s.repo,owner,"telegram")
-			defer domain.channel_binding_destroy(&b)
-			if bind_err.code!=.None do return "",bind_err
-			if bound {
-				grant, granted, grant_err := iface.bot_channel_conversion_binding_get(s.repo,b.binding_id)
-				if grant_err.code!=.None do return "",grant_err
-				if granted && grant.activation_generation==state.generation {
-					obj := make(json.Object,context.temp_allocator)
-					obj["state"]="active"
-					obj["display"]=b.external_display
-					obj["connected_at"]=b.created_at
-					view.telegram.binding=obj
+		view.whatsapp.binding = json.Null(nil)
+		view.whatsapp.held_replies = make([]Bot_Held_Reply_View,0,context.temp_allocator)
+		if live && state.enabled {
+			if s.canonical_telegram && s.adapter!=nil {
+				binding, _, get_err := canonical_binding_view(s,state,"telegram")
+				if get_err.code!=.None do return "",get_err
+				view.telegram.configured=true
+				view.telegram.binding=binding
+			}
+			if canonical_channel_enabled(s,"whatsapp",owner) && s.whatsapp!=nil {
+				entitled, entitlement_err := bots_channel_entitled(s,"whatsapp",owner)
+				if entitlement_err.code!=.None do return "",entitlement_err
+				view.whatsapp.configured=true
+				view.whatsapp.enabled=entitled
+				if entitled {
+					binding, window_open, get_err := canonical_binding_view(s,state,"whatsapp")
+					if get_err.code!=.None do return "",get_err
+					view.whatsapp.binding=binding
+					view.whatsapp.window_open=window_open
 				}
 			}
-			view.whatsapp.binding=json.Null(nil)
-			view.whatsapp.held_replies=make([]Bot_Held_Reply_View,0,context.temp_allocator)
-			return bots_encode_view(view)
 		}
-		view.whatsapp.binding = json.Null(nil)
-		view.whatsapp.held_replies = make([]Bot_Held_Reply_View, 0, context.temp_allocator)
 		return bots_encode_view(view)
 	}
 	identity: channel.Identity
@@ -269,6 +283,19 @@ bots_view_json :: proc(s: ^Bots_Service, owner: string) -> (string, domain.Domai
 		}
 	}
 	return bots_encode_view(view)
+}
+
+canonical_binding_view :: proc(s: ^Bots_Service,state: domain.Bot_Web_Activation,provider: string) -> (json.Value,bool,domain.Domain_Error) {
+	b, bound, err := iface.binding_get_active_by_owner(s.repo,state.owner_user_id,provider)
+	defer domain.channel_binding_destroy(&b)
+	if err.code!=.None || !bound do return json.Null(nil),false,err
+	grant, granted, grant_err := iface.bot_channel_conversion_binding_get(s.repo,b.binding_id)
+	if grant_err.code!=.None || !granted || grant.activation_generation!=state.generation do return json.Null(nil),false,grant_err
+	obj := make(json.Object,context.temp_allocator)
+	obj["state"]="active"
+	obj["display"]=strings.clone(b.external_display,context.temp_allocator)
+	obj["connected_at"]=strings.clone(b.created_at,context.temp_allocator)
+	return obj,!bots_window_closed(bots_adapter(s,provider),b,bots_now_ms(s)),{}
 }
 
 bots_encode_view :: proc(view: Bot_View) -> (string, domain.Domain_Error) {

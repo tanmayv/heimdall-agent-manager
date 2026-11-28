@@ -38,7 +38,7 @@ canonical_reply_target :: proc(s: ^Bots_Service, repos: ^iface.Repositories, ins
 	   origin.origin!=strings.concatenate({binding.provider,"/",binding.binding_id},context.temp_allocator) {
 		return {},channel_conversion_denied()
 	}
-	if !canonical_channel_enabled(s,binding.provider) do return {},channel_conversion_denied()
+	if !canonical_channel_enabled(s,binding.provider,owner) do return {},channel_conversion_denied()
 	grant, have_grant, grant_err := iface.bot_channel_conversion_binding_get(&repos.bots,binding_id)
 	if grant_err.code != .None do return {},grant_err
 	if !have_grant || grant.activation_generation!=state.generation || grant.binding_generation<1 do return {},channel_conversion_denied()
@@ -51,7 +51,7 @@ canonical_reply_target :: proc(s: ^Bots_Service, repos: ^iface.Repositories, ins
 // Compute the scope before the local author seals its own plaintext. This
 // preview does not commit a reply, route, or watermark.
 prepare_canonical_reply :: proc(s: ^Bots_Service, snapshot: domain.Agent_Instance, reply_to: string) -> (channelvault.Reply_Scope, domain.Reply_Origin, domain.Domain_Error) {
-	if s==nil || s.uow_factory==nil || !s.canonical_telegram do return {},{},{}
+	if s==nil || s.uow_factory==nil || (!s.canonical_telegram && !canonical_channel_enabled(s,domain.CHANNEL_PROVIDER_WHATSAPP,string(snapshot.owner_user_id))) do return {},{},{}
 	context.allocator=context.temp_allocator
 	uow, begun, begin_err := iface.unit_of_work_begin(s.uow_factory)
 	if !begun do return {},{},begin_err
@@ -88,5 +88,5 @@ record_canonical_reply_proof :: proc(raw: rawptr, repos: ^iface.Repositories, m:
 	if scope.input_message_id=="" || scope.input_message_id!=proof.input_message_id do return bots_detail_error(.Conflict,"channel_reply_origin_changed")
 	if err := iface.bot_channel_conversion_reply_insert(&repos.bots,m.message_id,scope.input_message_id,proof.proof); err.code!=.None do return err
 	if repos.bots.channel_reply_enqueue==nil do return domain.domain_error(.Internal_Error,"channel reply outbox is not configured")
-	return repos.bots.channel_reply_enqueue(repos.bots.ctx,m.message_id,scope.owner_user_id,scope.provider)
+	return repos.bots.channel_reply_enqueue(repos.bots.ctx,m.message_id,scope.owner_user_id,scope.provider,scope.binding_id)
 }

@@ -57,7 +57,7 @@ channel_conversion_snapshot :: proc(s: ^Bots_Service, intent: Conversion_Intent)
 	defer if uow.ctx != nil do iface.unit_of_work_rollback(&uow)
 	prepared, err := read_channel_conversion_source(s, uow.repos, intent.owner, intent.binding, intent.event.update_key, intent.input, intent.reply)
 	if err.code != .None do return {}, {}, err
-	if intent.reply == "" && (prepared.provider != intent.provider || prepared.recipient != intent.event.external_chat_id || prepared.external_user_id != intent.event.external_user_id) {
+	if intent.reply == "" && (prepared.provider != intent.provider || !canonical_channel_sender_matches(intent.provider,prepared.recipient,prepared.external_user_id,intent.event)) {
 		return {}, {}, bots_detail_error(.Forbidden, "channel_vault_origin_mismatch")
 	}
 	authority, auth_err := channel_vault_authority(s, intent.owner, prepared.bridge_id)
@@ -130,7 +130,7 @@ seal_canonical_channel_media :: proc(s: ^Bots_Service, owner, binding, input, pr
 	intent := Conversion_Intent{owner=owner,binding=binding,input=input,provider=provider,event=event}
 	initial, _, auth_err := channel_conversion_snapshot(s,intent)
 	if auth_err.code!=.None do return {},"",auth_err
-	if initial.recipient!=event.external_chat_id || initial.external_user_id!=event.external_user_id do return {},"",channel_conversion_denied()
+	if !canonical_channel_sender_matches(provider,initial.recipient,initial.external_user_id,event) do return {},"",channel_conversion_denied()
 	f, provider_err := a.media_fetch(a.ctx,event.media.file_ref,max_bytes)
 	defer {
 		if len(f.bytes)>0 do crypto.zero_explicit(raw_data(f.bytes),len(f.bytes))

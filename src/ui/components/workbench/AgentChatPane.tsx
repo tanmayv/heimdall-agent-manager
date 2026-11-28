@@ -4240,6 +4240,7 @@ function channelMessageLabel(channel: { provider: string; status: string }): str
   switch (channel.status) {
     case 'received': return `From ${name}`;
     case 'pending': return `Waiting to send on ${name}`;
+    case 'held': return `Waiting for a new message on ${name}`;
     case 'sent': return `Sent on ${name}`;
     case 'unknown': return `${name} delivery could not be confirmed`;
     case 'failed': return `Could not send on ${name}`;

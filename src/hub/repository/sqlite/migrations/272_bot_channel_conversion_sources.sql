@@ -37,18 +37,23 @@ CREATE TABLE bot_channel_reply_outbox (
     reply_message_id TEXT PRIMARY KEY REFERENCES bot_channel_conversion_replies(reply_message_id),
     owner_user_id TEXT NOT NULL,
     provider TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','sent','failed','unknown','stale')),
+    binding_id TEXT NOT NULL REFERENCES bot_channel_conversion_bindings(binding_id),
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','held','sent','failed','unknown','stale')),
+    hold_anchor TEXT NOT NULL DEFAULT '',
     next_attempt_ms INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX bot_channel_reply_outbox_pending
-    ON bot_channel_reply_outbox(provider, next_attempt_ms, reply_message_id) WHERE status='pending';
+    ON bot_channel_reply_outbox(provider, next_attempt_ms, reply_message_id) WHERE status IN ('pending','held');
 CREATE TABLE bot_channel_reply_parts (
     reply_message_id TEXT NOT NULL REFERENCES bot_channel_reply_outbox(reply_message_id),
     part_index INTEGER NOT NULL CHECK (part_index >= 0),
-    status TEXT NOT NULL CHECK (status IN ('sending','sent','failed','unknown')),
+    status TEXT NOT NULL CHECK (status IN ('sending','sent','held','failed','unknown')),
     provider_message_id TEXT NOT NULL DEFAULT '',
+    window_anchor TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (reply_message_id, part_index)
 );
+
+CREATE INDEX bot_channel_reply_parts_provider_id ON bot_channel_reply_parts(provider_message_id) WHERE provider_message_id<>'';
 
 -- Feedback is a durable, coalescing hint. The shared R7 evidence contains
 -- only actual agent consumption, not a web read or a preview.
@@ -66,3 +71,15 @@ BEGIN
     WHERE o.inbound_message_id=NEW.message_id AND o.external_message_id<>'' AND b.owner_user_id=NEW.owner_user_id
     ON CONFLICT(inbound_message_id) DO UPDATE SET reaction='read',dispatched=0 WHERE reaction='queued';
 END;
+
+-- Only authenticated WhatsApp callbacks may enter this metadata-only queue.
+-- They may beat the original HTTP acknowledgement to durable storage.
+CREATE TABLE bot_channel_whatsapp_receipts (
+    event_id TEXT PRIMARY KEY,
+    provider_message_id TEXT NOT NULL,
+    recipient TEXT NOT NULL,
+    provider_code INTEGER NOT NULL,
+    received_at TEXT NOT NULL,
+    processed INTEGER NOT NULL DEFAULT 0 CHECK (processed IN (0,1))
+);
+CREATE INDEX bot_channel_whatsapp_receipts_pending ON bot_channel_whatsapp_receipts(provider_message_id) WHERE processed=0;

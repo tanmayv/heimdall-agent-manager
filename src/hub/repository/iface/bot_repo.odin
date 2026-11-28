@@ -3,15 +3,20 @@ package iface
 import domain "odin_test:hub/domain"
 
 Bot_Repository :: struct {
+	canonical_whatsapp_receipt_store: proc(ctx: rawptr,event_id,external_id,recipient: string,code: int,now: string) -> (bool,domain.Domain_Error),
+	canonical_whatsapp_receipt_pending: proc(ctx: rawptr) -> ([]domain.Bot_Channel_Provider_Receipt,domain.Domain_Error),
+	canonical_whatsapp_receipt_apply: proc(ctx:rawptr,r: domain.Bot_Channel_Provider_Receipt,part_status,job_status: string) -> (bool,domain.Domain_Error),
+	canonical_whatsapp_receipt_purge: proc(ctx:rawptr,cutoff: string) -> domain.Domain_Error,
 	channel_queue_feedback: proc(ctx: rawptr,id: string) -> domain.Domain_Error,
 	channel_feedback_pending: proc(ctx: rawptr,provider: string) -> ([]domain.Bot_Channel_Feedback,domain.Domain_Error),
 	channel_feedback_claim: proc(ctx: rawptr,id,reaction: string) -> (bool,domain.Domain_Error),
-	channel_reply_enqueue: proc(ctx: rawptr,id,owner,provider: string) -> domain.Domain_Error,
+	canonical_binding_touch: proc(ctx: rawptr,binding_id,provider_time: string) -> domain.Domain_Error,
+	channel_reply_enqueue: proc(ctx: rawptr,id,owner,provider,binding_id: string) -> domain.Domain_Error,
 	channel_reply_recover: proc(ctx: rawptr,provider: string) -> domain.Domain_Error,
 	channel_reply_pending: proc(ctx: rawptr,provider: string,now_ms: i64) -> ([]domain.Bot_Channel_Reply_Job,domain.Domain_Error),
 	channel_reply_state: proc(ctx: rawptr,id,owner: string) -> (string,domain.Domain_Error),
-	channel_reply_finish: proc(ctx: rawptr,id,status: string,next_attempt_ms: i64) -> domain.Domain_Error,
-	channel_reply_part_claim: proc(ctx: rawptr,id: string,index: int) -> (string,domain.Domain_Error),
+	channel_reply_finish: proc(ctx: rawptr,id,status,hold_anchor: string,next_attempt_ms: i64) -> domain.Domain_Error,
+	channel_reply_part_claim: proc(ctx: rawptr,id: string,index: int,window_anchor: string) -> (string,domain.Domain_Error),
 	channel_reply_part_finish: proc(ctx: rawptr,id: string,index: int,status,external_id: string) -> domain.Domain_Error,
 	pairing_insert_fresh: proc(ctx: rawptr, pairing: domain.Channel_Pairing, activation_generation: i64) -> domain.Domain_Error,
 	binding_activate_fresh: proc(ctx: rawptr, binding: domain.Channel_Binding, code_hash, consumed_at: string, activation_generation, binding_generation: i64, pairing_update_key: string) -> (domain.Channel_Binding,bool,domain.Domain_Error),

@@ -730,6 +730,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.bots = bots_service.Bots_Service{channel_vault_directory=&graph.vault_directory_repo, channel_vault_exchange={ctx=&graph.bridge_runtime_registry, run=exchange_channel_vault}, placement=&graph.placement,ui_origin = config.ui_origin, repo = &graph.bot_repo, uow_factory = &graph.uow_factory, event_bus = &graph.event_bus, experiments = &graph.experiment_repo, entitlements = billing_service.entitlement_lookup(&graph.billing), agents = &graph.agents, providers = &graph.providers, bridges = &graph.repos.bridges, registry = &graph.bridge_runtime_registry, command_sink = &graph.bot_command_sink, adapter = nil, clock = &graph.clock, ids = &graph.ids, timers = config.bot_timers}
 	graph.agents.runtime_policy = {ctx=&graph.bots, check=bots_service.check_web_runtime_policy}
 	graph.bots.canonical_telegram = config.canonical_telegram
+	graph.bots.canonical_whatsapp_owner = config.canonical_whatsapp_owner
 	graph.bots.canonical_content = &graph.content
 	graph.agent_action_handlers.bots = &graph.bots
 	graph.content.channel_display = {ctx=&graph.bots,get=bots_service.channel_message_display}

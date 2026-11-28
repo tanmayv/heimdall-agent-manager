@@ -43,12 +43,19 @@ bots_push_receive :: proc(s: ^Bots_Service, provider, signature, body: string) -
 	}
 	if len(batch) == 0 do return .Stored, 0, 0
 	now := platform.clock_now(s.clock)
+	legacy := batch
+	canonical_count := 0
+	if canonical_channel_enabled(s,provider) && s.canonical_content!=nil {
+		admitted, err := admit_canonical_whatsapp_push(s,batch,now)
+		if err.code!=.None do return .Store_Failed,len(batch),0
+		legacy,canonical_count=admitted.legacy,admitted.inserted
+	}
 	count: int
 	{
 		sync.mutex_lock(&s.mutex)
 		defer sync.mutex_unlock(&s.mutex)
 		rows := make([dynamic]domain.Channel_Push_Event, 0, len(batch), context.temp_allocator)
-		for b in batch {
+		for b in legacy {
 			fence := bots_legacy_push_guard(s, provider, b)
 			if fence.code == .Conflict do continue
 			if fence.code != .None do return .Store_Failed, len(batch), 0
@@ -59,13 +66,13 @@ bots_push_receive :: proc(s: ^Bots_Service, provider, signature, body: string) -
 				media_name = b.media.name, media_mime = b.media.mime, media_size = b.media.size,
 				body = b.text, provider_code = b.provider_code, provider_time = b.provider_time, received_at = now})
 		}
-		if len(rows) == 0 do return .Stored, len(batch), 0
+		if len(rows) == 0 do return .Stored, len(batch), canonical_count
 		err: domain.Domain_Error
 		count, err = iface.push_events_insert(s.repo, rows[:])
 		if err.code != .None do return .Store_Failed, len(batch), 0
 	}
 	fmt.printf("bots: whatsapp webhook stored events=%d new=%d\n", len(batch), count)
-	return .Stored, len(batch), count
+	return .Stored, len(batch), count + canonical_count
 }
 
 bots_intake_entry :: proc(data: rawptr) {
@@ -112,6 +119,11 @@ bots_push_intake_iteration :: proc(rt: ^Bots_Runtime) -> (more: bool, delay: tim
 				media = {kind = channel.Media_Kind(e.media_kind), file_ref = e.media_ref, name = e.media_name, mime = e.media_mime, size = e.media_size}}
 			seqs[i] = e.seq
 			if e.kind == .Delivery_Failed {append(&effects, update); continue}
+			// A spool row can never activate a new shared binding, even
+			// if it was received while no matching chat was bound.
+			fence := bots_legacy_push_guard(s,"whatsapp",update)
+			if fence.code==.Conflict do continue
+			if fence.code!=.None do return false,BOT_PUSH_INTAKE_RETRY
 			binding, found, binding_err := bots_find_binding(s, "whatsapp", e.external_chat_id, e.external_user_id)
 			if binding_err.code != .None {domain.channel_binding_destroy(&binding); return false, BOT_PUSH_INTAKE_RETRY}
 			if found {

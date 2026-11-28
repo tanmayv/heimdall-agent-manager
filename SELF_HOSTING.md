@@ -1746,6 +1746,15 @@ conversation attachments. Larger files keep their caption with a limit
 notice. Outgoing attachments use authenticated links to the web conversation
 artifact viewer.
 
+The WhatsApp shared-chat pilot is also off by default. Set
+`HEIMDALL_CANONICAL_WHATSAPP_OWNER` to the one designated account's exact
+Hub owner ID. The account must still have the `bots` experiment and the
+WhatsApp entitlement enabled, opt into the shared conversation and pair
+again. This does not convert old messages or open access for other accounts.
+A held reply stays on web until a verified message opens a new WhatsApp
+reply window on the original pairing. WhatsApp uses the same attachment
+limit and outbound link behavior as Telegram.
+
 `HEIMDALL_BOT_TIMERS_JSON` is **for tests only**. It accepts a JSON object of
 `Bot_Timer_Config` field names from the bots slice 1 specification, section 14.1.
 Durations are in milliseconds; count fields are integer counts. Absent fields

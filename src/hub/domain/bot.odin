@@ -579,6 +579,11 @@ channel_attachment_destroy :: proc(a: ^Channel_Attachment) {
 	a^ = {}
 }
 
-Bot_Channel_Reply_Job :: struct {reply_message_id,owner_user_id,provider: string}
+Bot_Channel_Reply_Job :: struct {reply_message_id,owner_user_id,provider,binding_id,hold_anchor: string}
 
 Bot_Channel_Feedback :: struct {input_id,binding_id,owner,chat_id,external_message_id,reaction: string}
+
+Bot_Channel_Provider_Receipt :: struct {
+	event_id,external_id,reply_message_id,window_anchor,owner_user_id,binding_id: string,
+	part_index,provider_code: int,
+}

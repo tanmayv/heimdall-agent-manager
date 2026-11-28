@@ -551,6 +551,7 @@ apply_whatsapp_env :: proc(config: ^app.Hub_Config) {
 	   path != "" {
 		config.whatsapp_business_account_id = read_key_file(path)
 	}
+	config.canonical_whatsapp_owner = strings.clone(strings.trim_space(os.get_env_alloc("HEIMDALL_CANONICAL_WHATSAPP_OWNER", context.temp_allocator)))
 	if base := os.get_env_alloc("HEIMDALL_WHATSAPP_API_BASE", context.temp_allocator); base != "" do config.whatsapp_api_base = strings.clone(base)
 }
 

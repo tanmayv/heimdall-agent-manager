@@ -66,7 +66,7 @@ pairing_activation_generation :: proc(s: ^Bots_Service, owner, provider: string)
 	state, found, err := iface.bot_web_activation_get(s.repo,owner)
 	defer domain.bot_web_activation_destroy(&state)
 	if err.code!=.None || !found do return 0,err
-	if !state.enabled || !canonical_channel_enabled(s,provider) do return 0,bots_legacy_guard(s,owner)
+	if !state.enabled || !canonical_channel_enabled(s,provider,owner) do return 0,bots_legacy_guard(s,owner)
 	return state.generation,{}
 }
 
@@ -207,7 +207,7 @@ bots_disconnect_for_reason :: proc(s: ^Bots_Service, owner_user_id, provider: st
 	sync.mutex_lock(&s.mutex)
 	if fence := bots_legacy_guard(s, owner_user_id); fence.code != .None {
 		sync.mutex_unlock(&s.mutex)
-		if fence.code==.Conflict && canonical_channel_enabled(s,provider) {
+		if fence.code==.Conflict && canonical_channel_enabled(s,provider,owner_user_id) {
 			return bots_disconnect_canonical_owner(s,owner_user_id,provider)
 		}
 		return fence

@@ -23,6 +23,7 @@ Hub_Config :: struct {
 	telegram_bot_token:                     string, // secret; never logged
 	canonical_telegram: bool,
 	telegram_api_base:                      string,
+	canonical_whatsapp_owner: string, // exact owner ID for the first shared-chat pilot
 	whatsapp_access_token:                  string, // secret; never logged
 	whatsapp_app_secret:                    string, // secret; never logged
 	whatsapp_verify_token:                  string, // secret; never logged

@@ -3,11 +3,23 @@ package sqlite
 import "core:fmt"
 import domain "odin_test:hub/domain"
 
-bot_channel_reply_enqueue_sqlite :: proc(ctx: rawptr, id, owner, provider: string) -> domain.Domain_Error {
+canonical_binding_touch_sqlite :: proc(ctx: rawptr, binding_id, provider_time: string) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+	conn := bot_repo_conn(ctx)
+	touched, err := bot_repo_write(conn,`UPDATE channel_bindings SET last_inbound_at=?,reengage_sent_at='',reengage_error=''
+		WHERE binding_id=? AND state='active' AND last_inbound_at<?;`,{provider_time,binding_id,provider_time})
+	if err.code!=.None || touched==0 do return err
+	_, err = bot_repo_write(conn,`UPDATE bot_channel_reply_outbox SET next_attempt_ms=0
+		WHERE binding_id=? AND provider='whatsapp' AND status='held' AND hold_anchor<?;`,{binding_id,provider_time})
+	return err
+}
+
+bot_channel_reply_enqueue_sqlite :: proc(ctx: rawptr, id, owner, provider, binding_id: string) -> domain.Domain_Error {
 	guard := tx_repository_enter()
 	defer tx_repository_leave(guard)
 	_, err := bot_repo_write(bot_repo_conn(ctx),
-		"INSERT INTO bot_channel_reply_outbox (reply_message_id,owner_user_id,provider) VALUES (?,?,?);",{id,owner,provider})
+		"INSERT INTO bot_channel_reply_outbox (reply_message_id,owner_user_id,provider,binding_id) VALUES (?,?,?,?);",{id,owner,provider,binding_id})
 	return err
 }
 
@@ -16,7 +28,7 @@ bot_channel_reply_recover_sqlite :: proc(ctx: rawptr, provider: string) -> domai
 	defer tx_repository_leave(guard)
 	conn := bot_repo_conn(ctx)
 	_, err := bot_repo_write(conn,`UPDATE bot_channel_reply_outbox AS job SET status='unknown'
-		WHERE provider=? AND status='pending' AND EXISTS (
+		WHERE provider=? AND status IN ('pending','held') AND EXISTS (
 			SELECT 1 FROM bot_channel_reply_parts p WHERE p.reply_message_id=job.reply_message_id AND p.status='sending');`,{provider})
 	if err.code!=.None do return err
 	// If the process stopped after writing the job outcome, finish the part
@@ -31,8 +43,8 @@ bot_channel_reply_pending_sqlite :: proc(ctx: rawptr, provider: string, now_ms: 
 	guard := tx_repository_enter()
 	defer tx_repository_leave(guard)
 	conn := bot_repo_conn(ctx)
-	stmt, err := bot_repo_prepare(conn,`SELECT reply_message_id,owner_user_id FROM bot_channel_reply_outbox
-		WHERE provider=? AND status='pending' AND next_attempt_ms<=CAST(? AS INTEGER)
+	stmt, err := bot_repo_prepare(conn,`SELECT reply_message_id,owner_user_id,binding_id,hold_anchor FROM bot_channel_reply_outbox
+		WHERE provider=? AND status IN ('pending','held') AND next_attempt_ms<=CAST(? AS INTEGER)
 		ORDER BY next_attempt_ms,reply_message_id LIMIT 8;`,{provider,fmt.tprintf("%d",now_ms)})
 	if err.code!=.None do return nil,err
 	defer sqlite3_finalize(stmt)
@@ -41,7 +53,7 @@ bot_channel_reply_pending_sqlite :: proc(ctx: rawptr, provider: string, now_ms: 
 		step := sqlite3_step(stmt)
 		if step==SQLITE_DONE do return rows[:],{}
 		if step!=SQLITE_ROW do return nil,bot_repo_error(conn)
-		append(&rows,domain.Bot_Channel_Reply_Job{column_text(stmt,0),column_text(stmt,1),provider})
+		append(&rows,domain.Bot_Channel_Reply_Job{column_text(stmt,0),column_text(stmt,1),provider,column_text(stmt,2),column_text(stmt,3)})
 	}
 }
 
@@ -59,22 +71,24 @@ bot_channel_reply_state_sqlite :: proc(ctx: rawptr, id, owner: string) -> (strin
 	return "",bot_repo_error(conn)
 }
 
-bot_channel_reply_finish_sqlite :: proc(ctx: rawptr, id, status: string, next_attempt_ms: i64) -> domain.Domain_Error {
+bot_channel_reply_finish_sqlite :: proc(ctx: rawptr, id, status, hold_anchor: string, next_attempt_ms: i64) -> domain.Domain_Error {
 	guard := tx_repository_enter()
 	defer tx_repository_leave(guard)
 	_, err := bot_repo_write(bot_repo_conn(ctx),
-		"UPDATE bot_channel_reply_outbox SET status=?,next_attempt_ms=? WHERE reply_message_id=? AND status='pending';",
-		{status,fmt.tprintf("%d",next_attempt_ms),id})
+		"UPDATE bot_channel_reply_outbox SET status=?,hold_anchor=?,next_attempt_ms=? WHERE reply_message_id=? AND status IN ('pending','held');",
+		{status,hold_anchor,fmt.tprintf("%d",next_attempt_ms),id})
 	return err
 }
 
-bot_channel_reply_part_claim_sqlite :: proc(ctx: rawptr, id: string, index: int) -> (string,domain.Domain_Error) {
+bot_channel_reply_part_claim_sqlite :: proc(ctx: rawptr, id: string, index: int, window_anchor: string) -> (string,domain.Domain_Error) {
 	guard := tx_repository_enter()
 	defer tx_repository_leave(guard)
 	conn := bot_repo_conn(ctx)
 	n := fmt.tprintf("%d",index)
-	count, err := bot_repo_write(conn,`INSERT OR IGNORE INTO bot_channel_reply_parts (reply_message_id,part_index,status)
-		SELECT reply_message_id,?,'sending' FROM bot_channel_reply_outbox WHERE reply_message_id=? AND status='pending';`,{n,id})
+	count, err := bot_repo_write(conn,`INSERT INTO bot_channel_reply_parts (reply_message_id,part_index,status,window_anchor)
+		SELECT reply_message_id,?,'sending',? FROM bot_channel_reply_outbox WHERE reply_message_id=? AND status IN ('pending','held')
+		ON CONFLICT(reply_message_id,part_index) DO UPDATE SET status='sending',provider_message_id='',window_anchor=excluded.window_anchor
+		WHERE bot_channel_reply_parts.status='held' AND bot_channel_reply_parts.window_anchor<excluded.window_anchor;`,{n,window_anchor,id})
 	if err.code!=.None do return "",err
 	if count==1 do return "claimed",{}
 	stmt, read_err := bot_repo_prepare(conn,"SELECT status FROM bot_channel_reply_parts WHERE reply_message_id=? AND part_index=?;",{id,n})
