@@ -29,15 +29,31 @@ ACP_Protocol_Driver :: struct {
 }
 
 // RPC policy contains no runtime pointer and can also be used by install probes.
+// The codec fields describe the protocol's wire dialect; the shared JSON-RPC
+// client reads them instead of branching on a protocol name.
 ACP_RPC_Policy :: struct {
     role: proc(method: string) -> ACP_RPC_Role,
     timeout: proc(method: string) -> i64,
     inbound_timeout: proc(method: string) -> i64,
     cancel_timeout: proc(method: string) -> i64,
+    codec: ACP_RPC_Codec,
+}
+ACP_RPC_Codec :: struct {
+    // Outgoing frames carry "jsonrpc":"2.0" and incoming frames must carry it.
+    // Without it the header is omitted and only checked when present.
+    jsonrpc_header: bool,
+    // Request IDs go on the wire as the positive signed-integer counter and only
+    // integer responses correlate. Otherwise the quoted epoch-scoped ID is sent
+    // and string/number response IDs keep their distinction.
+    integer_ids: bool,
+    // A notification with malformed params is dropped instead of failing the
+    // connection.
+    drop_malformed_notifications: bool,
 }
 ACP_RPC_POLICY_ACP :: ACP_RPC_Policy{
     acp_driver_acp_rpc_role, acp_driver_acp_rpc_timeout,
     acp_driver_acp_inbound_timeout, acp_driver_acp_cancel_timeout,
+    {jsonrpc_header = true},
 }
 
 acp_protocol_acp_driver := ACP_Protocol_Driver{

@@ -12,7 +12,6 @@ import "core:sync"
 import "core:thread"
 import "core:time"
 import "core:unicode/utf8"
-import contracts "odin_test:contracts"
 
 ACP_RPC_MAX_LINE :: 4*1024*1024
 ACP_RPC_QUEUE_BYTES :: 1024*1024
@@ -99,7 +98,6 @@ ACP_RPC_Work :: struct { bytes, delivery_id: string, ack: u64 }
 ACP_RPC_Client :: struct {
     io: ACP_RPC_IO,
     callbacks: ACP_RPC_Callbacks,
-    protocol: contracts.ACP_Protocol,
     policy: ACP_RPC_Policy,
     state: ACP_State,
     // Only dispatcher accesses these maps or state. Queue locks never cover
@@ -130,14 +128,12 @@ ACP_RPC_Client :: struct {
     reader, writer, dispatcher: ^thread.Thread,
 }
 
-acp_rpc_open :: proc(io: ACP_RPC_IO, callbacks: ACP_RPC_Callbacks, protocol: contracts.ACP_Protocol = .ACP, policy: ACP_RPC_Policy = ACP_RPC_POLICY_ACP) -> (^ACP_RPC_Client, bool) {
+acp_rpc_open :: proc(io: ACP_RPC_IO, callbacks: ACP_RPC_Callbacks, policy: ACP_RPC_Policy = ACP_RPC_POLICY_ACP) -> (^ACP_RPC_Client, bool) {
     context.allocator = runtime.heap_allocator()
     if io.write == nil || io.close == nil || !acp_state_component_ok(io.launch_epoch) ||
        !acp_state_component_ok(io.instance) || (io.state_path == "" && callbacks.checkpoint == nil) { return nil, false }
-    if protocol != .ACP && protocol != .Codex_App_Server do return nil, false
     if policy.role == nil || policy.timeout == nil || policy.inbound_timeout == nil || policy.cancel_timeout == nil do return nil, false
     c := new(ACP_RPC_Client)
-    c.protocol = protocol
     c.policy = policy
     c.io = io
     c.io.launch_epoch = strings.clone(io.launch_epoch)
@@ -377,13 +373,33 @@ acp_rpc_parse :: proc(raw: string) -> (json.Value, bool) {
     value, err := json.parse_value(&p)
     return value, err == nil && p.curr_token.kind == .EOF
 }
+acp_rpc_internal_id :: proc(epoch: string, counter: u64) -> string {
+    return fmt.tprintf("ham:%s:%d", epoch, counter)
+}
+// The wire token for an outgoing request: the quoted internal ID, or the bare
+// counter for integer-ID codecs.
+acp_rpc_wire_id :: proc(codec: ACP_RPC_Codec, internal_id: string, counter: u64) -> string {
+    return fmt.tprintf("%d", counter) if codec.integer_ids else acp_rpc_quote(internal_id)
+}
+// Maps a response ID to the internal ID it correlates with. String codecs
+// preserve the string/numeric distinction (a numeric echo never matches);
+// integer codecs correlate only positive integers with that counter's ID.
+acp_rpc_response_key :: proc(codec: ACP_RPC_Codec, epoch: string, id: json.Value) -> (string, bool) {
+    if codec.integer_ids {
+        counter, integer_id := id.(json.Integer)
+        if !integer_id || counter <= 0 do return "", false
+        return acp_rpc_internal_id(epoch, u64(counter)), true
+    }
+    key, string_id := id.(string)
+    return key, string_id
+}
 acp_rpc_quote :: proc(s: string) -> string {
     b, _ := json.marshal(s, allocator = context.temp_allocator); return string(b)
 }
-acp_rpc_envelope :: proc(id_json, method, params, field, value: string, protocol: contracts.ACP_Protocol = .ACP) -> string {
+acp_rpc_envelope :: proc(id_json, method, params, field, value: string, codec: ACP_RPC_Codec = ACP_RPC_POLICY_ACP.codec) -> string {
     b: strings.Builder; strings.builder_init(&b, context.temp_allocator)
     strings.write_string(&b, "{")
-    if protocol == .ACP do strings.write_string(&b, `"jsonrpc":"2.0",`)
+    if codec.jsonrpc_header do strings.write_string(&b, `"jsonrpc":"2.0",`)
     if id_json != "" { strings.write_string(&b, `"id":`); strings.write_string(&b, id_json); strings.write_string(&b, ",") }
     if method != "" {
         strings.write_string(&b, `"method":`); strings.write_string(&b, acp_rpc_quote(method))
@@ -443,15 +459,14 @@ acp_rpc_execute :: proc(c: ^ACP_RPC_Client, cmd: ^ACP_RPC_Command) {
             pending_bytes := len(cmd.a)+len(cmd.b)+2*len(c.state.launch_epoch)+128
             for p in c.state.pending_outbound do pending_bytes += len(p.id)+len(p.method)+len(p.params_json)+len(p.delivery_id)
             if len(c.state.pending_outbound) >= ACP_RPC_MAX_PENDING_OUTBOUND || pending_bytes > ACP_RPC_PENDING_OUTBOUND_BYTES do return
-            // Codex uses signed integer IDs on the wire. Keep epoch-scoped
-            // internal IDs so journals/completions retain the same identity.
-            if c.protocol == .Codex_App_Server && c.state.next_rpc_id > u64(max(i64)) do return
-            id = strings.clone(fmt.tprintf("ham:%s:%d", c.state.launch_epoch, c.state.next_rpc_id))
+            // Integer wire IDs are signed. Internal IDs stay epoch-scoped so
+            // journals/completions retain the same identity on every codec.
+            if c.policy.codec.integer_ids && c.state.next_rpc_id > u64(max(i64)) do return
+            id = strings.clone(acp_rpc_internal_id(c.state.launch_epoch, c.state.next_rpc_id))
             c.state.next_rpc_id += 1
         }
-        wire_id := acp_rpc_quote(id) if id != "" else ""
-        if id != "" && c.protocol == .Codex_App_Server do wire_id = fmt.tprintf("%d", c.state.next_rpc_id-1)
-        line := acp_rpc_envelope(wire_id, cmd.a, cmd.b, "", "", c.protocol)
+        wire_id := acp_rpc_wire_id(c.policy.codec, id, c.state.next_rpc_id-1) if id != "" else ""
+        line := acp_rpc_envelope(wire_id, cmd.a, cmd.b, "", "", c.policy.codec)
         start := len(c.state.pending_writes)
         delivery, ok := acp_rpc_stage(c, line)
         if !ok { delete(id); return }
@@ -474,12 +489,12 @@ acp_rpc_execute :: proc(c: ^ACP_RPC_Client, cmd: ^ACP_RPC_Command) {
         line: string
         if cmd.kind == .Reply {
             if !acp_rpc_json(cmd.b) do return
-            line = acp_rpc_envelope(p.id_json, "", "", "result", cmd.b, c.protocol)
+            line = acp_rpc_envelope(p.id_json, "", "", "result", cmd.b, c.policy.codec)
         } else {
             if !utf8.valid_string(cmd.err.message) || cmd.err.data_json != "" && !acp_rpc_json(cmd.err.data_json) do return
             error_json := strings.concatenate({`{"code":`, fmt.tprintf("%d", cmd.err.code), `,"message":`, acp_rpc_quote(cmd.err.message),
                 `,"data":`, cmd.err.data_json if cmd.err.data_json != "" else "null", "}"}, context.temp_allocator)
-            line = acp_rpc_envelope(p.id_json, "", "", "error", error_json, c.protocol)
+            line = acp_rpc_envelope(p.id_json, "", "", "error", error_json, c.policy.codec)
         }
         pending_bytes := len(line)+len(c.state.launch_epoch)+64
         for pending in c.state.pending_inbound do pending_bytes += acp_rpc_inbound_bytes(pending)
@@ -651,7 +666,7 @@ acp_rpc_message :: proc(c: ^ACP_RPC_Client, line: string) {
     if !object_ok { acp_rpc_fail(c, "acp_protocol_error"); return }
     version, _ := obj["jsonrpc"].(string)
     _, has_version := obj["jsonrpc"]
-    if (c.protocol == .ACP || has_version) && version != "2.0" { acp_rpc_fail(c, "acp_protocol_error"); return }
+    if (c.policy.codec.jsonrpc_header || has_version) && version != "2.0" { acp_rpc_fail(c, "acp_protocol_error"); return }
     method_value, has_method := obj["method"]
     id, has_id := obj["id"]
     result, has_result := obj["result"]
@@ -664,7 +679,7 @@ acp_rpc_message :: proc(c: ^ACP_RPC_Client, line: string) {
         params_ok := acp_rpc_params_ok(params)
         if !has_id {
             if !params_ok {
-                if c.protocol != .Codex_App_Server do acp_rpc_fail(c, "acp_protocol_error")
+                if !c.policy.codec.drop_malformed_notifications do acp_rpc_fail(c, "acp_protocol_error")
                 return
             }
             if c.callbacks.notification != nil do c.callbacks.notification(c.callbacks.data, strings.clone(method), strings.clone(params))
@@ -710,14 +725,7 @@ acp_rpc_message :: proc(c: ^ACP_RPC_Client, line: string) {
         rpc_error = {code = int(code), message = message}
         if data, present := error_object["data"]; present do rpc_error.data_json = acp_rpc_value_json(data)
     }
-    // Preserve ACP's string/numeric distinction. Codex correlates only integer
-    // responses with the epoch-scoped internal ID created for that counter.
-    outgoing_id, matching_type := id.(string)
-    if c.protocol == .Codex_App_Server {
-        counter, integer_id := id.(json.Integer)
-        matching_type = integer_id && counter > 0
-        outgoing_id = fmt.tprintf("ham:%s:%d", c.state.launch_epoch, counter)
-    }
+    outgoing_id, matching_type := acp_rpc_response_key(c.policy.codec, c.state.launch_epoch, id)
     idx, found := c.outbound[outgoing_id]
     if !matching_type || !found {
         if !c.unknown_ids[id_json] {

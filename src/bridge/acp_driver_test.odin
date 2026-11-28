@@ -11,7 +11,8 @@ import contracts "odin_test:contracts"
 acp_driver_protocol_envelopes_and_strict_versions :: proc(t: ^testing.T) {
     for protocol in ([]contracts.ACP_Protocol{.ACP, .Codex_App_Server}) {
         f: ACP_Test
-        c := acp_test_open(&f, protocol = protocol)
+        // The codec comes from the driver's RPC policy, not the protocol name.
+        c := acp_test_open(&f, policy = acp_protocol_driver(protocol).rpc)
         defer { acp_rpc_close(c); acp_test_delete(&f) }
         id, sent := acp_rpc_request(c, "initialize", "{}", 0, acp_test_completion(&f))
         defer delete(string(id), runtime.heap_allocator())
@@ -49,7 +50,7 @@ acp_driver_protocol_envelopes_and_strict_versions :: proc(t: ^testing.T) {
 @(test)
 acp_driver_codex_notifications_replies_and_restore :: proc(t: ^testing.T) {
     f: ACP_Test
-    c := acp_test_open(&f, protocol = .Codex_App_Server)
+    c := acp_test_open(&f, policy = ACP_RPC_POLICY_CODEX)
     id, sent := acp_rpc_request(c, "initialize", "{}", 0, acp_test_completion(&f))
     defer delete(string(id), runtime.heap_allocator())
     testing.expect(t, sent)
@@ -58,7 +59,7 @@ acp_driver_codex_notifications_replies_and_restore :: proc(t: ^testing.T) {
     defer delete(snapshot)
     acp_rpc_close(c); acp_test_delete(&f)
     restored: ACP_Test
-    next := acp_test_open(&restored, protocol = .Codex_App_Server)
+    next := acp_test_open(&restored, policy = ACP_RPC_POLICY_CODEX)
     defer { acp_rpc_close(next); acp_test_delete(&restored) }
     testing.expect(t, acp_rpc_restore(next, snapshot))
     if !acp_test_wait(t, &restored, .Writes, 1) do return
@@ -85,6 +86,50 @@ acp_driver_codex_notifications_replies_and_restore :: proc(t: ^testing.T) {
     sync.mutex_unlock(&restored.mu)
 }
 
+@(test)
+acp_driver_rpc_codec_ids_and_notifications :: proc(t: ^testing.T) {
+    acp, codex := ACP_RPC_POLICY_ACP.codec, ACP_RPC_POLICY_CODEX.codec
+    // ACP sends the quoted epoch-scoped ID and correlates only string echoes.
+    testing.expect_value(t, acp_rpc_wire_id(acp, "ham:e:7", 7), `"ham:e:7"`)
+    key, ok := acp_rpc_response_key(acp, "e", json.String("ham:e:7"))
+    testing.expect(t, ok && key == "ham:e:7")
+    _, ok = acp_rpc_response_key(acp, "e", json.Integer(7))
+    testing.expect(t, !ok)
+    // Codex sends the bare counter and correlates only positive integers.
+    testing.expect_value(t, acp_rpc_wire_id(codex, "ham:e:7", 7), "7")
+    key, ok = acp_rpc_response_key(codex, "e", json.Integer(7))
+    testing.expect(t, ok && key == "ham:e:7")
+    for bad in ([]json.Value{json.String("ham:e:7"), json.Integer(0), json.Integer(-3), json.Float(7)}) {
+        _, ok = acp_rpc_response_key(codex, "e", bad)
+        testing.expect(t, !ok)
+    }
+    testing.expect(t, !strings.contains(acp_rpc_envelope("1", "m", "{}", "", "", codex), "jsonrpc"))
+    testing.expect(t, strings.contains(acp_rpc_envelope(`"x"`, "m", "{}", "", "", acp), `"jsonrpc":"2.0"`))
+
+    // Integer IDs are signed on the wire: the counter cannot pass max(i64).
+    f: ACP_Test
+    c := acp_test_open(&f, policy = ACP_RPC_POLICY_CODEX)
+    defer { acp_rpc_close(c); acp_test_delete(&f) }
+    cmd := ACP_RPC_Command{kind = .Runtime, runtime_work = proc(_: rawptr, client: ^ACP_RPC_Client, _: string) -> bool {
+        client.state.next_rpc_id = u64(max(i64))+1; return true
+    }}
+    acp_rpc_call(c, &cmd)
+    id, sent := acp_rpc_request(c, "initialize", "{}", 0, acp_test_completion(&f))
+    defer delete(string(id), runtime.heap_allocator())
+    testing.expect(t, !sent)
+    // Malformed notification params are dropped by Codex but fail ACP.
+    testing.expect(t, c.io.feed(c, `{"method":"notice","params":"x"}`+"\n", 1))
+    if !acp_test_wait(t, &f, .Acks, 1) do return
+    sync.mutex_lock(&f.mu)
+    testing.expect(t, len(f.fault_reasons) == 0 && len(f.notification_params) == 0)
+    sync.mutex_unlock(&f.mu)
+    g: ACP_Test
+    strict := acp_test_open(&g)
+    defer { acp_rpc_close(strict); acp_test_delete(&g) }
+    testing.expect(t, strict.io.feed(strict, `{"jsonrpc":"2.0","method":"notice","params":"x"}`+"\n", 1))
+    acp_test_wait(t, &g, .Faults, 1)
+}
+
 driver_test_role :: proc(method: string) -> ACP_RPC_Role {
     return .Prompt if method == "custom/turn" else .Other
 }
@@ -94,7 +139,7 @@ driver_test_cancel_timeout :: proc(method: string) -> i64 { return 999 if method
 
 @(test)
 acp_driver_rpc_policy_controls_roles_deadlines_and_restore :: proc(t: ^testing.T) {
-    policy := ACP_RPC_Policy{driver_test_role, driver_test_timeout, driver_test_inbound_timeout, driver_test_cancel_timeout}
+    policy := ACP_RPC_Policy{driver_test_role, driver_test_timeout, driver_test_inbound_timeout, driver_test_cancel_timeout, ACP_RPC_POLICY_ACP.codec}
     f: ACP_Test
     c := acp_test_open(&f, policy = policy)
     defer { acp_rpc_close(c); acp_test_delete(&f) }

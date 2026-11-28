@@ -41,13 +41,13 @@ ACP_Test :: struct {
 }
 ACP_Test_Count :: enum { Writes, Acks, Results, Inbound, Notifications, Faults, Unknown, Checkpoints }
 
-acp_test_open :: proc(f: ^ACP_Test, reader: bool = false, state_path: string = "", protocol: contracts.ACP_Protocol = .ACP, policy: ACP_RPC_Policy = ACP_RPC_POLICY_ACP) -> ^ACP_RPC_Client {
+acp_test_open :: proc(f: ^ACP_Test, reader: bool = false, state_path: string = "", policy: ACP_RPC_Policy = ACP_RPC_POLICY_ACP) -> ^ACP_RPC_Client {
     sync.atomic_store(&f.clock, 1000000)
     io := ACP_RPC_IO{data = f, instance = "inst_test_acp", launch_epoch = "epoch_test", state_path = state_path,
         write = acp_test_write, ack = acp_test_ack, close = acp_test_close, now_ms = acp_test_clock}
     if reader do io.read = acp_test_read
     c, ok := acp_rpc_open(io, {data = f, checkpoint = acp_test_checkpoint, notification = acp_test_notification,
-        inbound_request = acp_test_inbound, fault = acp_test_fault, restore_completion = acp_test_restore_completion, unknown_response = acp_test_unknown}, protocol, policy)
+        inbound_request = acp_test_inbound, fault = acp_test_fault, restore_completion = acp_test_restore_completion, unknown_response = acp_test_unknown}, policy)
     if !ok do return nil
     f.client = c
     return c

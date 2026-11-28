@@ -495,7 +495,7 @@ acp_adapter_probe_profile :: proc(pp: ^Provider_Profile, root, scratch: string) 
     pipe.diagnostic = acp_adapter_probe_diagnostic; pipe.diagnostic_data = &p
     driver := acp_protocol_driver(d.protocol)
     if driver == nil { io.close(io.data); io.destroy(io.data); return false, "initialize_failed" }
-    c, client_ok := acp_rpc_open(io, {checkpoint = acp_adapter_probe_checkpoint}, d.protocol, driver.rpc)
+    c, client_ok := acp_rpc_open(io, {checkpoint = acp_adapter_probe_checkpoint}, driver.rpc)
     if !client_ok { io.close(io.data); io.destroy(io.data); return false, "pipe_unavailable" }
     sent := driver.probe(c, &p)
     fallback := "initialize_failed"

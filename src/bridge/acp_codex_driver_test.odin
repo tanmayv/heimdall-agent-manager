@@ -29,7 +29,7 @@ codex_test_connect :: proc(f: ^T4_Runtime_Test) {
         write=acp_test_write,ack=acp_test_ack,close=acp_test_close,now_ms=acp_test_clock},
         {data=f,checkpoint=t4_runtime_checkpoint,notification=codex_test_notification,inbound_request=t9_inbound,
          inbound_timeout=codex_test_timeout,restore_completion=t4_runtime_restore_completion},
-        .Codex_App_Server,acp_protocol_codex_driver.rpc)
+        acp_protocol_codex_driver.rpc)
 }
 codex_test_close :: proc(f: ^T4_Runtime_Test) {
     f.r.d.stopped=true
@@ -232,7 +232,7 @@ codex_driver_approval_schemas_relay_yolo_replay_and_cancel :: proc(t: ^testing.T
     for method,i in methods {
         params:=codex_test_approval_params(method)
         // All five methods use the real blocking permission relay in ask mode.
-        frame:=acp_rpc_envelope(fmt.tprintf("%d",100+i),method,params,"","",.Codex_App_Server)
+        frame:=acp_rpc_envelope(fmt.tprintf("%d",100+i),method,params,"","",ACP_RPC_POLICY_CODEX.codec)
         seq+=1; codex_test_frame(t,&f,seq,strings.trim_space(frame))
         blocker:=t9_blocker(t,&f,fmt.tprintf("%d",100+i)); defer delete(blocker)
         decision:="allow" if i%2==0 else "deny"
@@ -265,11 +265,11 @@ codex_driver_approval_schemas_relay_yolo_replay_and_cancel :: proc(t: ^testing.T
     }
     params:=codex_test_approval_params(methods[0])
     acp_runtime_replace(&f.r.mode,"yolo")
-    seq+=1; codex_test_frame(t,&f,seq,strings.trim_space(acp_rpc_envelope("200",methods[0],params,"","",.Codex_App_Server)))
+    seq+=1; codex_test_frame(t,&f,seq,strings.trim_space(acp_rpc_envelope("200",methods[0],params,"","",ACP_RPC_POLICY_CODEX.codec)))
     acp_test_wait(t,&f.f,.Writes,index+1)
     testing.expect(t,strings.contains(f.f.writes[index].bytes,`"decision":"accept"`)); index+=1
     f.r.d.cancelling=true
-    seq+=1; codex_test_frame(t,&f,seq,strings.trim_space(acp_rpc_envelope("201",methods[0],params,"","",.Codex_App_Server)))
+    seq+=1; codex_test_frame(t,&f,seq,strings.trim_space(acp_rpc_envelope("201",methods[0],params,"","",ACP_RPC_POLICY_CODEX.codec)))
     acp_test_wait(t,&f.f,.Writes,index+1)
     testing.expect(t,strings.contains(f.f.writes[index].bytes,`"decision":"cancel"`))
     testing.expect_value(t,f.f.order_errors,0)
@@ -372,7 +372,7 @@ codex_driver_approval_timeout_wrong_thread_and_replay_only :: proc(t: ^testing.T
     codex_test_active(&f); acp_runtime_replace(&f.r.d.phase,"prompt"); acp_runtime_replace(&f.r.d.codex.turn_id,"t")
     method:="item/permissions/requestApproval"
     params:=`{"threadId":"s","turnId":"t","itemId":"p","cwd":"/work","startedAtMs":1,"permissions":{"network":{"enabled":true}}}`
-    codex_test_frame(t,&f,1,strings.trim_space(acp_rpc_envelope("11",method,params,"","",.Codex_App_Server)))
+    codex_test_frame(t,&f,1,strings.trim_space(acp_rpc_envelope("11",method,params,"","",ACP_RPC_POLICY_CODEX.codec)))
     blocker:=t9_blocker(t,&f,"11"); defer delete(blocker)
     sync.atomic_store(&f.f.clock,2000000)
     testing.expect(t,t4_runtime_call(&f,"resume"))
@@ -384,7 +384,7 @@ codex_driver_approval_timeout_wrong_thread_and_replay_only :: proc(t: ^testing.T
     t9_worker_barrier(&f)
     testing.expect_value(t,len(f.f.writes),1)
     f.r.d.replay_only=true
-    codex_test_frame(t,&f,2,strings.trim_space(acp_rpc_envelope("12",method,params,"","",.Codex_App_Server)))
+    codex_test_frame(t,&f,2,strings.trim_space(acp_rpc_envelope("12",method,params,"","",ACP_RPC_POLICY_CODEX.codec)))
     if !acp_test_wait(t,&f.f,.Writes,2) do return
     testing.expect(t,strings.contains(f.f.writes[1].bytes,`"permissions":{}`))
     f.r.d.replay_only=false
@@ -423,7 +423,7 @@ codex_driver_probe_and_missing_thread_fail_without_auth_or_new_thread :: proc(t:
     old:=bridge_local_token_records; bridge_local_token_records=make([dynamic]Bridge_Local_Agent_Token_Record,allocator=runtime.heap_allocator())
     defer { delete(bridge_local_token_records); bridge_local_token_records=old }
     fixture:ACP_Test
-    c:=acp_test_open(&fixture,protocol=.Codex_App_Server,policy=acp_protocol_codex_driver.rpc)
+    c:=acp_test_open(&fixture,policy=acp_protocol_codex_driver.rpc)
     defer { acp_rpc_close(c); acp_test_delete(&fixture) }
     p:ACP_Adapter_Probe
     testing.expect(t,acp_codex_probe(c,&p))

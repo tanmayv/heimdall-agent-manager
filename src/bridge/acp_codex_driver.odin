@@ -33,11 +33,18 @@ acp_protocol_codex_driver := ACP_Protocol_Driver{
     cancel = acp_codex_cancel, steer = acp_codex_steer,
     steering_result = acp_codex_steering_result,
     inbound_timeout = acp_permission_timeout, probe = acp_codex_probe,
-    rpc = {acp_codex_role, acp_codex_timeout, acp_codex_inbound_timeout, acp_codex_cancel_timeout},
+    rpc = ACP_RPC_POLICY_CODEX,
     permission_request = acp_codex_permission_method, permissions_cancel = acp_permissions_cancel,
     permission_result = acp_codex_permission_result, permission_relay = acp_codex_permission_relay,
     tick = acp_codex_tick,
     can_steer = acp_codex_can_steer,
+}
+
+// The app-server speaks JSON-RPC without the version header, with signed
+// integer request IDs, and may emit notifications whose params are not objects.
+ACP_RPC_POLICY_CODEX :: ACP_RPC_Policy{
+    acp_codex_role, acp_codex_timeout, acp_codex_inbound_timeout, acp_codex_cancel_timeout,
+    {jsonrpc_header = false, integer_ids = true, drop_malformed_notifications = true},
 }
 
 acp_codex_durable_delete :: proc(d: ^ACP_Codex_Durable) {
@@ -167,7 +174,7 @@ acp_codex_prompt :: proc(r: ^ACP_Runtime,input: ACP_Runtime_Input,bootstrap: boo
     acp_runtime_replace(&r.d.phase,"prompt"); acp_runtime_replace(&r.d.current_input,input.id)
     // Predict the dispatcher-owned counter so the start identity is in the
     // same checkpoint as the outgoing RPC, including before a lost receipt.
-    acp_runtime_replace(&r.d.codex.start_id,fmt.tprintf("ham:%s:%d",r.epoch,r.client.state.next_rpc_id))
+    acp_runtime_replace(&r.d.codex.start_id,acp_rpc_internal_id(r.epoch,r.client.state.next_rpc_id))
     if acp_runtime_events.prompt_started!=nil do acp_runtime_events.prompt_started(r,input.id)
     if acp_runtime_request(r,"turn/start",acp_event_json(params)) do bridge_runtime_note_agent_activity(r.instance,"active","acp")
 }

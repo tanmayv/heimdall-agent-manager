@@ -385,7 +385,7 @@ acp_runtime_connect :: proc(r: ^ACP_Runtime, socket: string, after_seq: u64, che
     io, ok := acp_pipe_io_open(socket, r.instance, r.generation, r.epoch, r.state_path, after_seq)
     if !ok do return false
     r.client, ok = acp_rpc_open(io, {data = r, checkpoint = acp_runtime_checkpoint, notification = acp_runtime_notification,
-        inbound_request = acp_runtime_inbound, inbound_timeout = acp_runtime_inbound_timeout, fault = acp_runtime_fault, restore_completion = acp_runtime_restore_completion, can_process = acp_chat_can_process, tick = acp_inbox_tick}, r.descriptor.protocol, acp_runtime_driver(r).rpc)
+        inbound_request = acp_runtime_inbound, inbound_timeout = acp_runtime_inbound_timeout, fault = acp_runtime_fault, restore_completion = acp_runtime_restore_completion, can_process = acp_chat_can_process, tick = acp_inbox_tick}, acp_runtime_driver(r).rpc)
     if !ok { io.close(io.data); io.destroy(io.data); return false }
     if checkpoint != "" {
         if !acp_rpc_restore(r.client, checkpoint) do return false
