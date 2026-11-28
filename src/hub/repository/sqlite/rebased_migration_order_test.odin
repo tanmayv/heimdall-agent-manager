@@ -320,6 +320,7 @@ test_release_0_5_64_upgrades_whatsapp_and_copilot :: proc(t: ^testing.T) {
 test_release_0_5_95_upgrades_settings_panel :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	release_sync :: "265_extension_version_sync_0_5_95.sql"
+	release_0_5_95_etag :: "sha256:5ec6adced045a67a1c43fa7be485019888a91f064b9e230c1a4527b51de957a7"
 	transport_override :: "266_instance_runtime_transport_override.sql"
 	waiting_for_idle :: "267_reconfiguration_waiting_for_idle.sql"
 
@@ -351,7 +352,12 @@ test_release_0_5_95_upgrades_settings_panel :: proc(t: ^testing.T) {
 		testing.expect(t, migration_applied(&conn, waiting_for_idle))
 		testing.expect(t, sqlite_table_sql_mentions(&conn, "instance_reconfigurations", "waiting_for_idle"))
 		testing.expect(t, sqlite_trigger_mentions(&conn, "instance_reconfiguration_commit", "runtime_transport_override"))
-		testing.expect_value(t, rmo_text(&conn, "SELECT catalog_etag FROM provider_catalog_meta;"), "release-upgrade-fixture")
+		// 265 is never replayed: its etag never comes back. A later release
+		// sync (a newer bump-version migration) may legitimately replace the
+		// fixture etag, so only the 0.5.95 value is ruled out.
+		etag := rmo_text(&conn, "SELECT catalog_etag FROM provider_catalog_meta;")
+		testing.expect(t, etag != release_0_5_95_etag, "265 release sync was replayed")
+		testing.expect(t, etag != "", "catalog etag missing")
 		testing.expect_value(t, rmo_text(&conn, "PRAGMA integrity_check;"), "ok")
 	}
 }
