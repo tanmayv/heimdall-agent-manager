@@ -60,7 +60,7 @@ acp_provider_binding_delete :: proc(b: ^ACP_Runtime_Binding) {
 }
 
 acp_provider_marker_valid :: proc(raw: string, expected: ACP_Runtime_Binding) -> bool {
-    // The old integrity-only Claude marker deliberately cannot certify this
+    // The legacy integrity-only marker deliberately cannot certify this
     // contract, another profile, or another provider's runtime.
     actual: ACP_Runtime_Binding
     if json.unmarshal_string(raw, &actual, allocator = context.temp_allocator) != nil do return false
@@ -83,15 +83,10 @@ acp_adapter_profile_binding :: proc(provider, profile: string) -> (ACP_Runtime_B
     return acp_provider_profile_binding(&pp)
 }
 
-// This exact tuple was the only pre-descriptor runtime. Compatibility must
-// never let a legacy Claude path/receipt certify a future provider or revision.
-acp_provider_legacy_claude :: proc(d: contracts.ACP_Provider_Descriptor) -> bool {
-    return d.provider == "claude" && d.id == "claude-acp" && d.revision == 1 && d.pkg.version == "0.108.0"
-}
-
 acp_adapter_upgrade_legacy_marker :: proc(root: string, binding: ACP_Runtime_Binding) -> bool {
     d, known := contracts.acp_provider_descriptor(binding.provider)
-    if !known || !acp_provider_legacy_claude(d) do return false
+    // Compatibility never lets a legacy path/receipt certify a future revision.
+    if !known || !contracts.acp_descriptor_legacy_runtime(d) do return false
     old, err := os.read_entire_file(strings.concatenate({root, "/heimdall-probe-v1.json"}, context.temp_allocator), context.temp_allocator)
     if err != nil || string(old) != d.pkg.integrity do return false
     pp, perr := profile_lookup(binding.provider, binding.profile)
@@ -120,7 +115,7 @@ acp_legacy_bootstrap_filename :: proc(run_dir, instance: string) -> (string, boo
 acp_runtime_upgrade_legacy_state :: proc(s: ^ACP_State, intent: ACP_Hub_Intent, path: string, rec: Bridge_Local_Agent_Token_Record) -> (bool, string) {
     context.allocator = runtime.heap_allocator()
     d, known := contracts.acp_provider_descriptor(s.provider)
-    if !known || !acp_provider_legacy_claude(d) || s.schema_version != 1 || s.runtime_binding_version != 0 ||
+    if !known || !contracts.acp_descriptor_legacy_runtime(d) || s.schema_version != 1 || s.runtime_binding_version != 0 ||
        !acp_provider_binding_equal(s.binding, {}) ||
        s.adapter_version != d.pkg.version || s.profile == "" || s.profile != profile_effective_id(intent.provider, intent.profile) ||
        s.provider != intent.provider || !acp_rpc_restore_checkpoint_valid(s, true) { return false, "acp_restart_required" }
@@ -157,14 +152,9 @@ acp_provider_launch_argv :: proc(d: contracts.ACP_Provider_Descriptor, root, res
     case: return nil, false
     }
     append(&argv, ..d.args)
-    if d.protocol == .Codex_App_Server {
-        // Override only this child. Profile/global config files and other
-        // plugins remain intact; PTY launches retain their native hook setup.
-        append(&argv, "-c", "thread_unload_delay_secs=0", "-c", "features.hooks=false", "-c", "notify=[]",
-            "-c", "plugins.heimdall@heimdall-codex.enabled=false")
-        marketplace := bridge_codex_own_marketplace_name()
-        if marketplace != "" do append(&argv, "-c", strings.concatenate({"plugins.",BRIDGE_CODEX_PLUGIN_NAME,"@",marketplace,".enabled=false"},context.temp_allocator))
-    }
+    // Protocol-owned per-child overrides (e.g. disabling native hooks that
+    // the driver replaces).
+    if driver := acp_protocol_driver(d.protocol); driver != nil && driver.launch_args != nil do driver.launch_args(&argv)
     return argv[:], true
 }
 

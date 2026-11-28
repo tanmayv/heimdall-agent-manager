@@ -6,7 +6,6 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:sync"
-import agent_runtime "odin_test:lib/agent_runtime"
 import contracts "odin_test:contracts"
 
 // Wire shapes follow `codex app-server generate-json-schema` (0.162.0).
@@ -40,6 +39,16 @@ acp_protocol_codex_driver := ACP_Protocol_Driver{
     can_steer = acp_codex_can_steer,
     state_key = ACP_CODEX_STATE_KEY, state_load = acp_codex_state_load,
     state_save = acp_codex_state_save, state_delete = acp_codex_state_delete,
+    launch_args = acp_codex_launch_args,
+}
+
+// Override only this child. Profile/global config files and other plugins
+// remain intact; PTY launches retain their native hook setup.
+acp_codex_launch_args :: proc(argv: ^[dynamic]string) {
+    append(argv, "-c", "thread_unload_delay_secs=0", "-c", "features.hooks=false", "-c", "notify=[]",
+        "-c", "plugins.heimdall@heimdall-codex.enabled=false")
+    marketplace := bridge_codex_own_marketplace_name()
+    if marketplace != "" do append(argv, "-c", strings.concatenate({"plugins.",BRIDGE_CODEX_PLUGIN_NAME,"@",marketplace,".enabled=false"},context.temp_allocator))
 }
 
 // The app-server speaks JSON-RPC without the version header, with signed
@@ -180,19 +189,9 @@ acp_codex_thread :: proc(r: ^ACP_Runtime) -> bool {
 }
 
 acp_codex_ready :: proc(r: ^ACP_Runtime) {
-    r.d.replay_only = false; r.d.ready = true; r.d.steering_supported = true
-    acp_events_ready(r)
-    acp_runtime_replace(&r.d.phase,"ready")
-    if !acp_rpc_checkpoint(r.client) { acp_runtime_error(r,"acp_state_write_failed"); return }
-    if !acp_runtime_current(r) do return
-    sync.mutex_lock(&bridge_runtime_mutex)
-    for &inst in bridge_runtime_instances do if inst.agent_instance_id==r.instance do inst.acp_session_ready=true
-    sync.mutex_unlock(&bridge_runtime_mutex)
-    bridge_startup_accept(r.rec,bridge_runtime_now_ms()); bridge_runtime_mark_start_success(r.instance)
-    if !r.d.starter_sent {
-        r.d.starter_sent = true
-        acp_runtime_prompt(r,{id="starter",text=agent_runtime.render_acp_starter_prompt(r.d.starter,false)},bootstrap=true)
-    } else { acp_runtime_drain(r) }
+    // Developer instructions already carry the bootstrap text.
+    r.d.replay_only = false; r.d.steering_supported = true
+    acp_runtime_session_ready(r,starter_links_bootstrap=false)
 }
 
 acp_codex_prompt :: proc(r: ^ACP_Runtime,input: ACP_Runtime_Input,bootstrap: bool) {

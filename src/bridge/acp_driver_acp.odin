@@ -5,7 +5,6 @@ import "core:encoding/json"
 import "core:os"
 import "core:strings"
 import "core:sync"
-import agent_runtime "odin_test:lib/agent_runtime"
 import contracts "odin_test:contracts"
 
 ACP_INITIALIZE_PARAMS :: `{"protocolVersion":1,"clientInfo":{"name":"heimdall","version":"`+contracts.APP_VERSION+`"},"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false}}`
@@ -47,22 +46,8 @@ acp_runtime_model_selected :: proc(r: ^ACP_Runtime) -> bool {
 
 acp_driver_acp_ready :: proc(r: ^ACP_Runtime) {
     if !r.d.starter_sent && !acp_runtime_bootstrap_supported(r) { acp_runtime_error(r, "acp_bootstrap_unsupported"); return }
-    r.d.ready = true
-    acp_events_ready(r)
-    acp_runtime_replace(&r.d.phase, "ready")
-    if !acp_rpc_checkpoint(r.client) { acp_runtime_error(r, "acp_state_write_failed"); return }
-    if !acp_runtime_current(r) do return
-    sync.mutex_lock(&bridge_runtime_mutex)
-    for &inst in bridge_runtime_instances do if inst.agent_instance_id == r.instance do inst.acp_session_ready = true
-    sync.mutex_unlock(&bridge_runtime_mutex)
-    bridge_startup_accept(r.rec, bridge_runtime_now_ms())
-    bridge_runtime_mark_start_success(r.instance)
-    if !r.d.starter_sent {
-        r.d.starter_sent = true
-        acp_runtime_prompt(r, {id = "starter", text = agent_runtime.render_acp_starter_prompt(r.d.starter, !r.d.embedded_context)}, bootstrap = true)
-    } else {
-        acp_runtime_drain(r)
-    }
+    // Without embedded context the starter refers to the linked bootstrap file.
+    acp_runtime_session_ready(r, starter_links_bootstrap = !r.d.embedded_context)
 }
 
 acp_driver_acp_prompt :: proc(r: ^ACP_Runtime, input: ACP_Runtime_Input, bootstrap := false) {

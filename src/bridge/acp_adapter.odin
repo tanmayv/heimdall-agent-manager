@@ -67,8 +67,8 @@ acp_adapter_root :: proc(provider: string) -> string {
     if !known do return ""
     base := bridge_shell_data_dir(); defer delete(base)
     root := strings.concatenate({base, "/bridge/acp-runtimes/", d.provider, "/", d.id, fmt.tprintf("-r%d/", d.revision), d.pkg.version})
-    if acp_provider_legacy_claude(d) && !os.is_dir(root) {
-        old := strings.concatenate({base, "/bridge/acp-adapters/claude/0.108.0"})
+    if contracts.acp_descriptor_legacy_runtime(d) && !os.is_dir(root) {
+        old := strings.concatenate({base, "/", d.legacy.root})
         // Keep the old path and lock inode intact beneath surviving children.
         if os.is_dir(old) { delete(root); return old }
         delete(old)
@@ -337,14 +337,14 @@ acp_adapter_status_json :: proc(provider: string, override: string = "", profile
         state: string,
         error, checked_at: json.Value,
         provider, runtime_kind, profile: string,
-        protocol: string, // "acp" or "codex_app_server": display data for the UI
+        protocol: string, // contracts.ACP_PROTOCOL_NAMES: display data for the UI
         install_command, diagnostic: json.Value,
         // The catalog recipe this verdict was evaluated against; the Hub
         // compares it with its own catalog (a Hub-owned fact).
         adapter_package, adapter_version: string,
     }{s.installed, nullable(s.version), nullable(s.node_version), s.state, nullable(s.error), nullable(s.checked_at),
         provider, acp_adapter_runtime_kind(d), profile_effective_id(provider, profile),
-        "codex_app_server" if d.protocol == .Codex_App_Server else "acp",
+        contracts.ACP_PROTOCOL_NAMES[d.protocol],
         nullable(s.install_command), nullable(s.diagnostic),
         recipe.acp_recipe.adapter_package, recipe.acp_recipe.adapter_version})
     return string(raw)
@@ -376,7 +376,7 @@ acp_adapter_probe_reason :: proc(diagnostic: string, fallback: string) -> string
     return fallback
 }
 
-acp_adapter_probe_message :: proc(reason: string, provider: string = "claude") -> string {
+acp_adapter_probe_message :: proc(reason: string, provider: string) -> string {
     d, known := contracts.acp_provider_descriptor(provider)
     if !known do return ""
     if reason == "profile_unavailable" do return fmt.tprintf("The canonical %s provider profile is unavailable", d.display_name)
@@ -453,7 +453,7 @@ acp_adapter_cli_probe :: proc(provider: string) -> (reason, diagnostic: string) 
     if perr != .None do return strings.concatenate({"acp_", provider, "_not_found"}), "profile_unavailable"
     version: string
     version, reason, diagnostic = acp_provider_cli_version(&pp)
-    // Adapter version fields describe the pinned npm package, not Claude.
+    // Adapter version fields describe the pinned npm package, not the CLI.
     if reason == "" && version != "" do fmt.println("ACP probe CLI version:", provider, version)
     return
 }

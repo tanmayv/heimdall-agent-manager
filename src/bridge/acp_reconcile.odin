@@ -13,7 +13,7 @@ import contracts "odin_test:contracts"
 ACP_Hub_Intent :: struct { status, epoch, transport: string, run_count: int, provider, profile: string }
 
 // Process-boundary seams keep recovery orchestration testable without a real
-// Claude process. Journal, token rotation, shims and dispatcher stay real.
+// provider process. Journal, token rotation, shims and dispatcher stay real.
 ACP_Runtime_IO :: struct {
     ensure_daemon: proc() -> (string, bool),
     request: proc(socket: string, frame: []byte, timeout_ms: int) -> (Pty_Host_Reply, bool),

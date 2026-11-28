@@ -14,6 +14,18 @@ ACP_Permission_Policy :: enum { Session_Mode, Once_Only }
 ACP_Package_Pin :: struct {
     name, version, integrity: string,
 }
+// Wire/display name of each protocol (UI status `protocol` field).
+ACP_PROTOCOL_NAMES := [ACP_Protocol]string{.ACP = "acp", .Codex_App_Server = "codex_app_server"}
+// A runtime installed before descriptors existed. Only this exact descriptor
+// tuple (id, revision, package version) may honour the old install directory
+// and integrity-only probe marker; nothing else is ever certified by them.
+ACP_Legacy_Runtime :: struct {
+    id: string,
+    revision: int,
+    version: string,
+    // The old install root, relative to the bridge data directory.
+    root: string,
+}
 ACP_Provider_Descriptor :: struct {
     provider, id, display_name: string,
     revision: int,
@@ -41,6 +53,7 @@ ACP_Provider_Descriptor :: struct {
     bootstrap_filename: string,
     permission_policy: ACP_Permission_Policy,
     model_category, permission_category, ask_mode, yolo_mode: string,
+    legacy: ACP_Legacy_Runtime, // Adapter only; zero when there is none
 }
 
 ACP_CLAUDE_DESCRIPTOR :: ACP_Provider_Descriptor{
@@ -52,6 +65,7 @@ ACP_CLAUDE_DESCRIPTOR :: ACP_Provider_Descriptor{
     bootstrap_filename = "CLAUDE.md",
     permission_policy = .Session_Mode, model_category = "model", permission_category = "mode",
     ask_mode = "default", yolo_mode = "bypassPermissions",
+    legacy = {id = "claude-acp", revision = 1, version = "0.108.0", root = "bridge/acp-adapters/claude/0.108.0"},
 }
 
 // Copilot is detect-only: the user installs the GitHub Copilot CLI (npm
@@ -119,6 +133,12 @@ acp_provider_descriptor :: proc(provider: string) -> (ACP_Provider_Descriptor, b
 // published package and the resolved underlying executable; system CLIs launch
 // the registered provider binary and bind a minimum version and the operating
 // systems they ship for. No shape enables a provider.
+// True when d is exactly the descriptor tuple of its pre-descriptor runtime.
+acp_descriptor_legacy_runtime :: proc(d: ACP_Provider_Descriptor) -> bool {
+    return d.legacy.root != "" && d.launch == .Adapter && d.id == d.legacy.id &&
+        d.revision == d.legacy.revision && d.pkg.version == d.legacy.version
+}
+
 acp_descriptor_shape_valid :: proc(d: ACP_Provider_Descriptor) -> bool {
     // Every ACP runtime belongs to a registered provider, which supplies its CLI
     // binary, version format and auth guidance.
@@ -131,6 +151,8 @@ acp_descriptor_shape_valid :: proc(d: ACP_Provider_Descriptor) -> bool {
        d.model_category == "" { return false }
     if d.protocol != .ACP && d.protocol != .Codex_App_Server do return false
     if d.discover_models_via_acp && (d.protocol != .ACP || d.launch != .System) do return false
+    if d.legacy != {} && (d.launch != .Adapter || d.legacy.id == "" || d.legacy.revision < 1 || !exact_adapter_version(d.legacy.version) ||
+       d.legacy.root == "" || strings.has_prefix(d.legacy.root, "/") || strings.contains(d.legacy.root, "..")) { return false }
     switch d.launch {
     case .Adapter:
         if !strings.has_prefix(d.pkg.integrity, "sha512-") || len(d.pkg.integrity) != 95 || d.node_min_major < 22 ||

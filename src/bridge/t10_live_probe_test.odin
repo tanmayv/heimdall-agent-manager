@@ -62,7 +62,7 @@ t10_live_adapter_install_profile_and_failure :: proc(t: ^testing.T) {
     bridge_os_make_owner_executable(script)
     ok, diagnostic := acp_adapter_probe("claude", bad, data)
     testing.expect(t, !ok && diagnostic == "node_module_missing")
-    testing.expect(t, !strings.contains(acp_adapter_probe_message(diagnostic), "credential"))
+    testing.expect(t, !strings.contains(acp_adapter_probe_message(diagnostic, "claude"), "credential"))
     profile.config.binary_path = profile_join(data, "missing-claude")
     testing.expect(t, profile_store_write_locked({profile}))
     ok, diagnostic = acp_adapter_probe("claude", bad, data)

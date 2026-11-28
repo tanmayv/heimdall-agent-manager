@@ -6,6 +6,7 @@ import "core:fmt"
 import "core:strings"
 import "core:sync"
 import "core:time"
+import agent_runtime "odin_test:lib/agent_runtime"
 import contracts "odin_test:contracts"
 
 ACP_Input_Lane :: enum { Steer, Batch, Digest }
@@ -432,7 +433,7 @@ acp_runtime_connect :: proc(r: ^ACP_Runtime, socket: string, after_seq: u64, che
 }
 
 // Both install probes and managed launches use the provider profile's resolved
-// Claude executable. The adapter's bundled SDK binary cannot run on every host.
+// provider executable. An adapter's bundled SDK binary cannot run on every host.
 acp_profile_child_env :: proc(pp: ^Provider_Profile) -> ([]string, bool) {
     context.allocator = context.temp_allocator
     env, ok := profile_child_env(pp); if !ok do return nil, false
@@ -533,6 +534,27 @@ acp_runtime_launch :: proc(command, instance, epoch, etag, run_dir, endpoint, pr
     bridge_pty_host_events_ensure()
     bridge_task_wake_note_launched(instance)
     return true, "", {}
+}
+
+// Shared by every driver once its session accepts input: persist, publish
+// readiness, then send the one-time starter prompt or drain queued input.
+acp_runtime_session_ready :: proc(r: ^ACP_Runtime, starter_links_bootstrap: bool) {
+    r.d.ready = true
+    acp_events_ready(r)
+    acp_runtime_replace(&r.d.phase, "ready")
+    if !acp_rpc_checkpoint(r.client) { acp_runtime_error(r, "acp_state_write_failed"); return }
+    if !acp_runtime_current(r) do return
+    sync.mutex_lock(&bridge_runtime_mutex)
+    for &inst in bridge_runtime_instances do if inst.agent_instance_id == r.instance do inst.acp_session_ready = true
+    sync.mutex_unlock(&bridge_runtime_mutex)
+    bridge_startup_accept(r.rec, bridge_runtime_now_ms())
+    bridge_runtime_mark_start_success(r.instance)
+    if !r.d.starter_sent {
+        r.d.starter_sent = true
+        acp_runtime_prompt(r, {id = "starter", text = agent_runtime.render_acp_starter_prompt(r.d.starter, starter_links_bootstrap)}, bootstrap = true)
+    } else {
+        acp_runtime_drain(r)
+    }
 }
 
 // Result/steering callbacks transfer their heap-owned result to the driver.

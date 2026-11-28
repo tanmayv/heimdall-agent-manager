@@ -35,6 +35,8 @@ ACP_Protocol_Driver :: struct {
     state_load: proc(runtime_json: string) -> (rawptr, bool),
     state_save: proc(state: rawptr) -> (string, bool),
     state_delete: proc(state: rawptr),
+    // Appends protocol-specific flags (temp-allocated) to a launch or probe argv.
+    launch_args: proc(argv: ^[dynamic]string),
 }
 
 // Later: the turn will accept steering once the protocol has admitted it (e.g.

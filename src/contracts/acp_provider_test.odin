@@ -203,3 +203,30 @@ acp_descriptors_link_to_the_provider_registry :: proc(t: ^testing.T) {
         }
     }
 }
+
+@(test)
+acp_descriptor_legacy_runtime_is_descriptor_data :: proc(t: ^testing.T) {
+    d := ACP_CLAUDE_DESCRIPTOR
+    testing.expect(t, acp_descriptor_legacy_runtime(d) && acp_descriptor_shape_valid(d))
+    testing.expect_value(t, d.legacy.root, "bridge/acp-adapters/claude/0.108.0")
+    // Only the exact pre-descriptor tuple is recognised.
+    bumped := d; bumped.revision = 2
+    testing.expect(t, !acp_descriptor_legacy_runtime(bumped))
+    bumped = d; bumped.pkg.version = "0.109.0"
+    testing.expect(t, !acp_descriptor_legacy_runtime(bumped))
+    bumped = d; bumped.id = "claude-acp-2"
+    testing.expect(t, !acp_descriptor_legacy_runtime(bumped))
+    for provider in ([]string{"copilot", "kiro", "codex", "opencode"}) {
+        other, _ := acp_provider_descriptor(provider)
+        testing.expect(t, !acp_descriptor_legacy_runtime(other))
+    }
+    // Legacy roots are adapter-only, relative and contained.
+    invalid := ACP_KIRO_DESCRIPTOR; invalid.legacy = d.legacy
+    testing.expect(t, !acp_descriptor_shape_valid(invalid))
+    for root in ([]string{"/abs/claude", "bridge/../claude"}) {
+        invalid = d; invalid.legacy.root = root
+        testing.expect(t, !acp_descriptor_shape_valid(invalid))
+    }
+    testing.expect_value(t, ACP_PROTOCOL_NAMES[.ACP], "acp")
+    testing.expect_value(t, ACP_PROTOCOL_NAMES[.Codex_App_Server], "codex_app_server")
+}
