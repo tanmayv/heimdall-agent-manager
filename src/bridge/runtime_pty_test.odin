@@ -515,3 +515,42 @@ runtime_interface_is_narrow_and_inbox_driven :: proc(t: ^testing.T) {
 	testing.expect(t, pty_inbox_target.transport == pty_agent_runtime.transport)
 	testing.expect(t, bridge_inbox_target("inst_runtime_never_seen") == nil, "no runtime, no delivery")
 }
+
+// pty_test_set_busy marks an instance's inbox as being typed (or not).
+pty_test_set_busy :: proc(instance: string, busy: bool) {
+	sync.mutex_lock(&bridge_inbox_mu); defer sync.mutex_unlock(&bridge_inbox_mu)
+	if slot := bridge_inbox_slot_locked(instance); slot != nil do slot.busy = busy
+}
+
+// S3: an explicit steer goes through Send now's consume-and-busy section: it
+// consumes the pending unread notice (typed once), commits its own identity,
+// and never types while the worker is typing.
+@(test)
+pty_explicit_steer_consumes_the_pending_notice_and_respects_busy :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+	context.allocator = runtime.heap_allocator()
+	env := pty_test_begin("pty-explicit"); defer pty_test_end(&env)
+	id := "inst_pty_explicit"
+	defer bridge_runtime_set_status(id, "stopped", "idle")
+	pty_test_activity(id, "active", "pane_diff")
+	notice := bridge_pty_host_unread_notice()
+	testing.expect(t, bridge_runtime_submit(id, {kind = .User_Message, id = "msg_e1", text = notice, hub_message = true}))
+	testing.expect_value(t, len(pty_test_queued(id)), 1)
+	testing.expect(t, bridge_runtime_submit(id, {kind = .User_Message, id = "msg_e2", text = notice, hub_message = true}, .Steer))
+	testing.expect_value(t, pty_test_trace(), fmt.tprintf("Esc %q Enter Enter", notice))
+	testing.expect_value(t, len(pty_test_queued(id)), 0) // the pending notice was consumed
+	// Nothing is left for the worker to type again.
+	pty_test_reset()
+	pty_test_activity(id, "idle", "pane_diff")
+	bridge_task_notice_tick(bridge_runtime_now_ms() + 20_000)
+	testing.expect_value(t, len(pty_test_ops), 0)
+	// The steered identity is completed: a retried admission is acknowledged.
+	testing.expect(t, bridge_runtime_submit(id, {kind = .User_Message, id = "msg_e2", text = notice, hub_message = true}))
+	testing.expect_value(t, len(pty_test_queued(id)), 0)
+	// While a delivery is being typed, an explicit steer waits in the inbox.
+	pty_test_set_busy(id, true)
+	testing.expect(t, bridge_runtime_submit(id, {kind = .User_Message, id = "msg_e3", text = notice, hub_message = true}, .Steer))
+	testing.expect_value(t, len(pty_test_ops), 0)
+	testing.expect_value(t, len(pty_test_queued(id)), 1)
+	pty_test_set_busy(id, false)
+}

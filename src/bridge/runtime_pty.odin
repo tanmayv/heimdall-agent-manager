@@ -245,40 +245,51 @@ pty_runtime_enqueue :: proc(instance: string, input: Runtime_Input) -> bool {
 pty_agent_submit :: proc(instance: string, input: Runtime_Input, mode: Runtime_Mode) -> bool {
 	if !pty_runtime_known(instance) do return false
 	if mode == .Queue do return pty_runtime_enqueue(instance, input)
-	// Explicit steer / send now types right away; if the terminal is not
-	// reachable the input still waits in the inbox.
-	if pty_runtime_type_now(instance, input.text, mode) do return true
+	// Explicit steer / send now types right away through the same section as
+	// Send now; if the terminal is not reachable the input waits in the inbox.
+	// A hub message notice points at chat read, so it also stands for every
+	// pending unread notice.
+	if pty_runtime_deliver_now(instance, input.text, mode, input_id = input.id, consume_unread = input.hub_message) do return true
 	return pty_runtime_enqueue(instance, input)
 }
 
-// pty_agent_send_now types the unread notice right away: interrupt keys, the
-// notice, submit (CONTRACT-06). The agent's chat read then returns every
-// unread message, so there are no members: req.message_ids is not used. The
-// pending unread notices are consumed so nothing is typed twice. A request id
-// already applied is a no-op, also after a restart: the inbox remembers the
-// last applied id, committed with the consumed notices.
-pty_agent_send_now :: proc(instance: string, req: Runtime_Send_Now) -> bool {
-	if !pty_runtime_known(instance) || req.batch_id == "" || len(req.batch_id) > BRIDGE_INBOX_SEND_NOW_ID_MAX do return false
+// pty_runtime_deliver_now is the one consume-and-busy section of explicit
+// deliveries (Send now, explicit steer / send now). It claims the inbox's
+// busy flag, so the worker never types into the same moment, types text with
+// the mode's plan, and only then commits: the pending unread notices it
+// stands for (consume_unread) leave the inbox, input_id becomes a completed
+// identity and request_id the last applied Send now. A request id already
+// applied is a no-op, also after a restart.
+pty_runtime_deliver_now :: proc(instance, text: string, mode: Runtime_Mode, request_id := "", input_id := "", consume_unread := false) -> bool {
 	consumed := make([dynamic]string, context.temp_allocator)
 	{
 		sync.mutex_lock(&bridge_inbox_mu); defer sync.mutex_unlock(&bridge_inbox_mu)
 		slot := bridge_inbox_slot_locked(instance)
 		if slot == nil || slot.busy do return false
-		if slot.inbox.send_now_applied == req.batch_id do return true
-		for input in slot.inbox.queue do if pty_runtime_unread(input) do append(&consumed, strings.clone(input.id, context.temp_allocator))
+		if request_id != "" && slot.inbox.send_now_applied == request_id do return true
+		if consume_unread do for input in slot.inbox.queue do if pty_runtime_unread(input) do append(&consumed, strings.clone(input.id, context.temp_allocator))
 		slot.busy = true
 	}
-	notice := bridge_pty_host_unread_notice()
-	typed := pty_runtime_type_now(instance, notice, .Send_Now)
+	typed := pty_runtime_type_now(instance, text, mode)
 	sync.mutex_lock(&bridge_inbox_mu); defer sync.mutex_unlock(&bridge_inbox_mu)
 	slot := bridge_inbox_slot_locked(instance)
 	if slot == nil do return false
 	slot.busy = false
 	if !typed do return false
 	for id in consumed do bridge_inbox_remove(&slot.inbox, id)
-	bridge_inbox_note_send_now_applied(&slot.inbox, req.batch_id)
-	if !bridge_inbox_save(&slot.inbox) do fmt.eprintfln("bridge inbox: could not commit Send now for instance=%q; a restart may deliver it again", instance)
+	if input_id != "" do bridge_inbox_remember(&slot.inbox, input_id)
+	if request_id != "" do bridge_inbox_note_send_now_applied(&slot.inbox, request_id)
+	if !bridge_inbox_save(&slot.inbox) do fmt.eprintfln("bridge inbox: could not commit an explicit delivery for instance=%q; a restart may deliver it again", instance)
 	return true
+}
+
+// pty_agent_send_now types the unread notice right away: interrupt keys, the
+// notice, submit (CONTRACT-06). The agent's chat read then returns every
+// unread message, so there are no members: req.message_ids is not used. The
+// pending unread notices are consumed so nothing is typed twice.
+pty_agent_send_now :: proc(instance: string, req: Runtime_Send_Now) -> bool {
+	if !pty_runtime_known(instance) || req.batch_id == "" || len(req.batch_id) > BRIDGE_INBOX_SEND_NOW_ID_MAX do return false
+	return pty_runtime_deliver_now(instance, bridge_pty_host_unread_notice(), .Send_Now, request_id = req.batch_id, consume_unread = true)
 }
 
 // Inputs the agent already read (chat read) no longer need a notice.
