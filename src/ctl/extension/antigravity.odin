@@ -63,17 +63,25 @@ antigravity_hook_from_name :: proc(name: string) -> Antigravity_Hook {
 	return .Unknown
 }
 
-// ANTIGRAVITY_UNGATED_TOOLS (canonical snake_case names) are reads of the local
-// workspace and the agent's own subagent coordination; a subagent's tools are
-// gated on their own PreToolUse. In permission_mode "ask" every other tool,
-// including network reads, scheduling and tools this list has never heard of,
-// is relayed for approval: an unknown tool fails safe to asking, it never
-// slips through because a name list is short.
-ANTIGRAVITY_UNGATED_TOOLS :: [?]string{
-	"view_file", "view_file_outline", "view_code_item", "list_dir", "find_by_name",
-	"grep_search", "codebase_search",
-	"invoke_subagent", "define_subagent", "send_message", "manage_task",
-}
+// ANTIGRAVITY_UNGATED_TOOLS (canonical snake_case names) are the tools agy may
+// run in permission_mode "ask" without a relay. A name is listed only when it
+// is a read-only native agy tool named in the repo's Antigravity sources (the
+// captures in src/ctl/extension/testdata/antigravity and the tool list in
+// docs/plans/antigravity-provider-extension.md, REQ-EXT-AGY-4); there is no
+// real capture of agy's full ask-mode tool set yet. Sources for each entry:
+//   - view_file: testdata/antigravity/pre_tool_use.json, post_tool_use.json,
+//     session_background_subagent.jsonl; plan doc tool list.
+// Not listed, so gated:
+//   - read_url_content, search_web: network reads (plan doc).
+//   - invoke_subagent, define_subagent, send_message, manage_task: subagent
+//     coordination (plan doc). A child's tool payloads carry no permissionMode
+//     in any capture (testdata/antigravity/session_background_subagent.jsonl),
+//     so a child's tools are not gated on their own and starting or steering
+//     one is approved here.
+//   - Every other name, including MCP tools and read tools no source names
+//     yet: an unknown tool fails safe to asking, it never slips through because
+//     a name list is short. Add a name only with a capture that shows it.
+ANTIGRAVITY_UNGATED_TOOLS :: [?]string{"view_file"}
 
 // antigravity_tool_needs_permission: in ask mode, whether agy asks for this tool.
 antigravity_tool_needs_permission :: proc(tool_name: string) -> bool {

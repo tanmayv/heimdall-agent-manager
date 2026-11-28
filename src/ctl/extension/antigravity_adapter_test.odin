@@ -1045,10 +1045,11 @@ test_antigravity_tracking_allocator_clean :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(track.bad_free_array), 0)
 }
 
-// P27: the ask-mode relay is not limited to three tool names. Every tool except
-// workspace reads and subagent coordination is gated (unknown tools fail safe
-// to asking), whatever spelling agy uses, and the shared self-approve rule
-// still approves ham-ctl through runCommand.
+// P27: the ask-mode relay is not limited to three tool names. Every tool but
+// the read-only native tools the repo's captures name (ANTIGRAVITY_UNGATED_TOOLS)
+// is gated, unknown tools fail safe to asking, and the shared self-approve rule
+// still approves ham-ctl through runCommand. Subagent tools are gated because
+// child payloads carry no permissionMode (R6 review S3).
 @(test)
 test_antigravity_ask_mode_gates_every_tool_but_reads :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
@@ -1056,7 +1057,9 @@ test_antigravity_ask_mode_gates_every_tool_but_reads :: proc(t: ^testing.T) {
 	pre :: proc(tool: string) -> string {
 		return fmt.tprintf(`{{"hookEventName":"PreToolUse","conversationId":"s1","permissionMode":"ask","stepIdx":7,"toolCall":{{"name":"%s","args":{{"Url":"https://example.invalid","Cwd":"/repo"}}}}}}`, tool)
 	}
-	for tool in ([]string{"run_command", "runCommand", "WriteToFile", "replace_file_content", "multi_replace_file_content", "read_url_content", "search_web", "schedule", "some_future_mcp_tool"}) {
+	for tool in ([]string{"run_command", "runCommand", "WriteToFile", "replace_file_content", "multi_replace_file_content", "read_url_content", "search_web", "schedule", "some_future_mcp_tool",
+		"invoke_subagent", "invokeSubagent", "define_subagent", "send_message", "manage_task",
+		"list_dir", "grep_search", "find_by_name", "codebase_search"}) {
 		mapped, err := antigravity_map_hook(pre(tool), TS)
 		testing.expect_value(t, err, Hook_Error.None)
 		testing.expectf(t, mapped.is_permission, "%s must be gated in ask mode", tool)
@@ -1065,7 +1068,7 @@ test_antigravity_ask_mode_gates_every_tool_but_reads :: proc(t: ^testing.T) {
 			testing.expect_value(t, ev.kind, contracts.Ext_Event_Kind.Permission_Request)
 		}
 	}
-	for tool in ([]string{"view_file", "viewFile", "list_dir", "grep_search", "find_by_name", "codebase_search", "invokeSubagent", "send_message"}) {
+	for tool in ([]string{"view_file", "viewFile"}) {
 		mapped, err := antigravity_map_hook(pre(tool), TS)
 		testing.expect_value(t, err, Hook_Error.None)
 		testing.expectf(t, !mapped.is_permission, "%s is not gated", tool)
