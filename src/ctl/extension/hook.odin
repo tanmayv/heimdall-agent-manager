@@ -52,8 +52,9 @@ HOOK_INPUT_MAX :: 16 * 1024 * 1024
 // EVENT_SOCKET_TIMEOUT_MS bounds a non-permission round trip to the bridge.
 EVENT_SOCKET_TIMEOUT_MS :: 500
 // PERMISSION_RELAY_TIMEOUT_MS is how long the bridge waits for a UI decision.
-// The plugin's PermissionRequest hook timeout (extensions/claude-code/hooks/
-// hooks.json, 330s) must stay above it plus PERMISSION_SOCKET_MARGIN_MS.
+// Every provider's permission hook timeout (extensions/*/hooks/hooks.json, 330s)
+// must stay above it plus PERMISSION_SOCKET_MARGIN_MS (checked by
+// test_hooks_json_commands_use_the_shared_env_guard).
 PERMISSION_RELAY_TIMEOUT_MS :: 300_000
 PERMISSION_RELAY_TIMEOUT_MIN_MS :: 1_000
 PERMISSION_SOCKET_MARGIN_MS :: 15_000
@@ -63,6 +64,18 @@ PERMISSION_TIMEOUT_ENV :: "HEIMDALL_EXT_PERMISSION_TIMEOUT_MS"
 // Re-registration backoff after a transport failure.
 PERMISSION_RETRY_BACKOFF_MIN_MS :: 250
 PERMISSION_RETRY_BACKOFF_MAX_MS :: 2_000
+
+// HOOK_COMMAND_GUARD is the one env guard every provider's hooks.json uses
+// (extensions/*/hooks/hooks.json, kept identical by
+// test_hooks_json_commands_use_the_shared_env_guard): outside a Heimdall-launched
+// agent HEIMDALL_CTL_BIN is unset or not executable, so the hook exits 0 at once
+// with no output and never blocks the provider; inside one it execs ham-ctl.
+HOOK_COMMAND_GUARD :: `[ -x "${HEIMDALL_CTL_BIN:-}" ] || exit 0; exec "$HEIMDALL_CTL_BIN" extension hook `
+
+// hook_command is the hooks.json command for a provider's hook id.
+hook_command :: proc(provider: string, allocator := context.allocator) -> string {
+	return strings.concatenate({HOOK_COMMAND_GUARD, provider}, allocator)
+}
 
 // Send_Proc sends one bridge RPC and returns the raw response line.
 Send_Proc :: proc(endpoint, token, method, params: string, timeout_ms: int) -> (response: string, ok: bool)

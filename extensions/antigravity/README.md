@@ -11,9 +11,9 @@ Replacing legacy terminal screen-scraping (`source=pane_diff`), this extension n
 - **Unified File Diffs**: Automatic generation of unified diffs for mutating file tools (`write_to_file`, `replace_file_content`), capped at 64KB (`EXT_DIFF_MAX_BYTES`). Non-diffable and binary files are safely skipped.
 - **Interactive Permission Approvals**: In `permission_mode: ask`, every tool call except workspace reads and subagent coordination is gated in the Heimdall UI via `agent.extension.permission`, allowing users to approve or deny it from the web interface.
 
-All lifecycle hooks invoke:
+All lifecycle hooks invoke the env guard every Heimdall provider extension shares (`HOOK_COMMAND_GUARD` in `src/ctl/extension/hook.odin`):
 ```bash
-"$HEIMDALL_CTL_BIN" extension hook antigravity
+[ -x "${HEIMDALL_CTL_BIN:-}" ] || exit 0; exec "$HEIMDALL_CTL_BIN" extension hook antigravity
 ```
 which reads Antigravity's camelCase protojson payload from `stdin`, maps it to `ham.ext.v1`, and communicates with the local Heimdall Bridge socket.
 
@@ -60,7 +60,7 @@ The Heimdall extension **never** attempts to mutate `~/.gemini/hooks.json` or wr
 
 The extension is designed with strict **fail-open** semantics and is completely safe to install globally:
 
-1. **Unset Environment**: When Antigravity is run interactively outside Heimdall, `HEIMDALL_CTL_BIN` is unset. Hook processes exit 0 immediately with empty stdout.
+1. **Unset Environment**: When Antigravity is run interactively outside Heimdall, `HEIMDALL_CTL_BIN` is unset (or not executable). The guard exits 0 immediately with empty stdout.
 2. **Missing Bridge Credentials**: If `HEIMDALL_CTL_BIN` is set but `HEIMDALL_BRIDGE_ENDPOINT` or `HEIMDALL_AGENT_TOKEN` are empty or whitespace, `ham-ctl` exits 0 silently.
 3. **No Prompt Pollution**: Non-permission hooks strictly output empty stdout. Non-empty output in Antigravity hook handlers can inject unwanted tokens into the model context.
 
