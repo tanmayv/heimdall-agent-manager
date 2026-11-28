@@ -401,9 +401,10 @@ ham_ctl_head_is_ctl_bin :: proc(head, ctl_bin, cwd: string) -> bool {
 
 // HAM_CTL_CONNECTION_FLAGS redirect where ham-ctl connects or whose identity it
 // uses (e.g. `--bridge-endpoint tcp:evil:1` would send the agent token away,
-// `--agent-token` would act as another agent). Never auto-approved.
+// `--agent-token` would act as another agent, `--as` picks another configured
+// identity). Never auto-approved.
 HAM_CTL_CONNECTION_FLAGS :: [?]string{
-	"--bridge-endpoint", "--agent-token", "--token", "--user-token",
+	"--bridge-endpoint", "--agent-token", "--token", "--user-token", "--as",
 	"--hub", "--hub-url", "--daemon-url", "--config", "--agent-mode", "--wrapper-bin",
 }
 

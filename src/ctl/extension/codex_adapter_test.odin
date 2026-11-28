@@ -222,6 +222,7 @@ test_codex_permission_self_approves_ham_ctl :: proc(t: ^testing.T) {
 		"./bin/ham-ctl shell serve --port 8080",
 		"./bin/ham-ctl chat read --agent-token other",
 		"./bin/ham-ctl chat read --bridge-endpoint tcp:evil:1",
+		"./bin/ham-ctl task list --as alice",
 		"./bin/ham-ctl chat read *",
 		"./bin/ham-ctl chat read ?-bridge-endpoint tcp:evil:1",
 		"./bin/ham-ctl review post t1 --verdict approve --on-behalf-of user",

@@ -564,6 +564,9 @@ test_is_ham_ctl_command_accepts_only_a_lone_allowlisted_invocation :: proc(t: ^t
 		BIN + " chat read \\--agent-token hlat_x",
 		BIN + " chat read --agent-tok?n hlat_x",
 		BIN + " task show t --hub-url http://e",
+		BIN + " task list --as alice",
+		BIN + " task list --as=alice",
+		BIN + " chat read '--as' alice",
 		// Unquoted globs: the shell may expand any word into a flag (B2).
 		BIN + " chat read *",
 		BIN + " chat read ?-bridge-endpoint tcp:evil:1",
