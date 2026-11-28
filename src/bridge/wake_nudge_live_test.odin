@@ -212,6 +212,7 @@ wake_test_trusted_idle :: proc(id: string) {
 		inst.runtime_transport = pty_agent_runtime.transport
 		inst.activity_status = "idle"
 		inst.activity_source = "pane_diff"
+		inst.activity_source_kind = .Pane_Diff
 		// After any typing so far: the typed turn has been seen.
 		inst.activity_updated_unix_ms = bridge_runtime_now_ms() + 1
 		inst.pty_process_alive = true

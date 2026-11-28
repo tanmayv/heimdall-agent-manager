@@ -126,6 +126,7 @@ Bridge_Runtime_Instance :: struct {
 	runtime_status: string,
 	activity_status: string,
 	activity_source: string,
+	activity_source_kind: Bridge_Activity_Source,
 	activity_updated_unix_ms: i64,
 	last_seen_unix_ms: i64,
 	start_deadline_unix_ms: i64,
@@ -3550,6 +3551,7 @@ bridge_runtime_set_status_with_source_locked :: proc(instance_id, runtime_status
             if (runtime_changed || activity_changed) && !strings.contains(activity_source, "extension") do bridge_runtime_enqueue_status_push_locked(instance_id)
 			if accept_activity {
 				inst.activity_source = strings.clone(activity_source)
+				inst.activity_source_kind = bridge_activity_source_kind(activity_source)
 				inst.activity_updated_unix_ms = now
 			}
 			if touch_seen || inst.last_seen_unix_ms == 0 do inst.last_seen_unix_ms = now
@@ -3582,7 +3584,7 @@ bridge_runtime_set_status_with_source_locked :: proc(instance_id, runtime_status
 	// even if direct agent-actions (like repeated start-success) advanced the DB.
 	if runtime_status == "failed" do return // no prior generation to bind to a process exit
 	if bridge_runtime_instances == nil do bridge_runtime_instances = make([dynamic]Bridge_Runtime_Instance)
-	append(&bridge_runtime_instances, Bridge_Runtime_Instance{agent_instance_id = strings.clone(instance_id), state_seq = bridge_runtime_next_state_seq(0, now), runtime_status = strings.clone(runtime_status), runtime_reason = reason, activity_status = strings.clone(activity_status), activity_source = strings.clone(activity_source), activity_updated_unix_ms = now, last_seen_unix_ms = now, start_deadline_unix_ms = deadline, start_success_seen = seen, pty_process_alive = (runtime_status == "running")})
+	append(&bridge_runtime_instances, Bridge_Runtime_Instance{agent_instance_id = strings.clone(instance_id), state_seq = bridge_runtime_next_state_seq(0, now), runtime_status = strings.clone(runtime_status), runtime_reason = reason, activity_status = strings.clone(activity_status), activity_source = strings.clone(activity_source), activity_source_kind = bridge_activity_source_kind(activity_source), activity_updated_unix_ms = now, last_seen_unix_ms = now, start_deadline_unix_ms = deadline, start_success_seen = seen, pty_process_alive = (runtime_status == "running")})
 	bridge_runtime_log_transition(instance_id, "", runtime_status, source, reason, loc)
 	if !strings.contains(activity_source, "extension") do bridge_runtime_enqueue_status_push_locked(instance_id)
 }
@@ -3609,28 +3611,59 @@ bridge_runtime_accept_activity_update :: proc(inst: ^Bridge_Runtime_Instance, so
 	return now - inst.activity_updated_unix_ms > ttl
 }
 
+// Where an activity report came from. Parsed once from the reporter's source
+// label (bridge_activity_source_kind); ranking and the PTY runtime's trusted
+// idle decide on the kind, never on the label text.
+Bridge_Activity_Source :: enum u8 {
+	Other,
+	Bridge,          // lifecycle defaults set by the bridge itself
+	Wrapper,         // legacy wrapper liveness signal
+	Pane_Diff,       // harness-agnostic screen activity detector
+	Permission_Gate, // waiting on a blocking approval
+	Extension,       // a provider's native hooks (<provider>_extension)
+	ACP,             // ACP session/prompt results
+}
+
+bridge_activity_source_kind :: proc(source: string) -> Bridge_Activity_Source {
+	if source == "acp" do return .ACP
+	s := strings.to_lower(strings.trim_space(source), context.temp_allocator)
+	if strings.contains(s, "extension") do return .Extension
+	switch s {
+	case "pane_diff": return .Pane_Diff
+	case "permission_gate": return .Permission_Gate
+	case "wrapper": return .Wrapper
+	case "bridge": return .Bridge
+	}
+	return .Other
+}
+
 bridge_runtime_activity_source_rank :: proc(source: string) -> int {
-	if source == "acp" do return 80
-	s := strings.to_lower(strings.trim_space(source))
-	defer delete(s)
-	// NOTE: the pi_extension==100 fast-path was REMOVED with the pi activity
-	// extension (task_18d129291c6a455d). It was the high-priority source that
-	// suppressed a correct pane_diff 'idle' (the stuck 'working · settling' bug).
-	// A native harness extension (e.g. antigravity) still ranks via the generic
-	// contains("extension")=>80 branch below.
-	if strings.contains(s, "extension") do return 80
-	// Harness-agnostic tmux pane-capture detector: now the primary activity source
-	// for every provider.
-	if s == "pane_diff" do return 40
-	// Permission gate (waiting_user while a blocking approval is outstanding, then
-	// active on resolve). Ranked EQUAL to pane_diff on purpose: equal ranks always
-	// accept (new_rank >= current_rank), so the gate's waiting_user shows
-	// immediately AND the next pane_diff cycle can override it right after the gate
-	// resolves — a higher rank would recreate a mini stuck-suppression until TTL.
-	if s == "permission_gate" do return 40
-	if s == "wrapper" do return 10
-	if s == "bridge" do return 5
+	switch bridge_activity_source_kind(source) {
+	case .ACP: return 80
+	// A native harness extension (e.g. antigravity). NOTE: the pi_extension==100
+	// fast-path was REMOVED with the pi activity extension (task_18d129291c6a455d).
+	case .Extension: return 80
+	// Harness-agnostic pane-capture detector: the primary activity source for
+	// every provider.
+	case .Pane_Diff: return 40
+	// Permission gate: ranked EQUAL to pane_diff on purpose, so the gate's
+	// waiting_user shows immediately AND the next pane_diff cycle can override
+	// it right after the gate resolves.
+	case .Permission_Gate: return 40
+	case .Wrapper: return 10
+	case .Bridge: return 5
+	case .Other: return 1
+	}
 	return 1
+}
+
+// bridge_activity_source_trusted_idle: an idle from these kinds means the turn
+// is over. Hooks outrank pane diff in the arbitration, so the arbitrated status
+// is hooks first with pane diff as the fallback. A lifecycle default, a wrapper
+// signal or a pending permission prompt is not a trusted idle (typing into an
+// approval prompt would answer it).
+bridge_activity_source_trusted_idle :: proc(kind: Bridge_Activity_Source) -> bool {
+	return kind == .Extension || kind == .Pane_Diff
 }
 
 // The result is borrowed (canonical literal or request-temp normalized text).

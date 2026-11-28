@@ -102,6 +102,7 @@ pty_test_activity :: proc(id, activity, source: string, updated_ms: i64 = 0) {
 		inst.runtime_transport = pty_agent_runtime.transport
 		inst.activity_status = activity
 		inst.activity_source = source
+		inst.activity_source_kind = bridge_activity_source_kind(source)
 		inst.activity_updated_unix_ms = updated_ms if updated_ms != 0 else bridge_runtime_now_ms()
 		inst.pty_process_alive = true
 		inst.start_success_seen = true
@@ -112,6 +113,29 @@ pty_test_forget_typed :: proc(id: string) {
 	sync.mutex_lock(&pty_runtime_typed_mu); defer sync.mutex_unlock(&pty_runtime_typed_mu)
 	if pty_runtime_typed == nil do return
 	for k in pty_runtime_typed do if k == id { delete_key(&pty_runtime_typed, k); delete(k, runtime.heap_allocator()); break }
+}
+
+@(test)
+activity_source_kind_is_parsed_once_and_decides_trust :: proc(t: ^testing.T) {
+	testing.expect(t, bridge_activity_source_kind("pane_diff") == .Pane_Diff)
+	testing.expect(t, bridge_activity_source_kind("claude_extension") == .Extension)
+	testing.expect(t, bridge_activity_source_kind("Codex_Extension ") == .Extension)
+	testing.expect(t, bridge_activity_source_kind("acp") == .ACP)
+	testing.expect(t, bridge_activity_source_kind("permission_gate") == .Permission_Gate)
+	testing.expect(t, bridge_activity_source_kind("bridge") == .Bridge && bridge_activity_source_kind("wrapper") == .Wrapper)
+	testing.expect(t, bridge_activity_source_kind("pane_diff_v2") == .Other)
+	for kind in Bridge_Activity_Source {
+		want := kind == .Extension || kind == .Pane_Diff
+		testing.expect(t, bridge_activity_source_trusted_idle(kind) == want, fmt.tprintf("%v", kind))
+	}
+	testing.expect(t, bridge_runtime_activity_source_rank("claude_extension") > bridge_runtime_activity_source_rank("pane_diff"))
+	testing.expect(t, bridge_runtime_activity_source_rank("pane_diff") == bridge_runtime_activity_source_rank("permission_gate"))
+	// The recorded kind follows the accepted source.
+	id := "inst_pty_kind"
+	bridge_runtime_set_status(id, "running", "idle")
+	defer bridge_runtime_set_status(id, "stopped", "idle")
+	snap, _ := bridge_runtime_instance_snapshot(id)
+	testing.expect(t, snap.activity_source_kind == .Bridge)
 }
 
 // ---- key data -------------------------------------------------------------------

@@ -179,20 +179,12 @@ pty_runtime_last_typed :: proc(instance: string) -> i64 {
 	return pty_runtime_typed[instance] if pty_runtime_typed != nil else 0
 }
 
-// Hooks (provider extensions) outrank pane diff in the activity arbitration,
-// so the arbitrated status is hooks first with pane diff as the fallback. A
-// launch default, a wrapper signal or a pending permission prompt is not a
-// trusted idle: typing into an approval prompt would answer it.
-pty_runtime_idle_source_trusted :: proc(source: string) -> bool {
-	return source == "pane_diff" || strings.contains(source, "extension")
-}
-
 // pty_runtime_idle reports a trusted idle for a live, started agent. With
 // after_typing, it also requires that the turn we last typed has been seen.
 pty_runtime_idle :: proc(instance: string, after_typing := true) -> bool {
 	snap, ok := bridge_runtime_instance_snapshot(instance)
 	if !ok || !snap.pty_process_alive || snap.stopped_intent_unix_ms != 0 || !snap.start_success_seen do return false
-	if snap.activity_status != "idle" || !pty_runtime_idle_source_trusted(snap.activity_source) do return false
+	if snap.activity_status != "idle" || !bridge_activity_source_trusted_idle(snap.activity_source_kind) do return false
 	if !after_typing do return true
 	last := pty_runtime_last_typed(instance)
 	return last == 0 || snap.activity_updated_unix_ms > last || pty_runtime_now() - last >= PTY_RUNTIME_TYPED_GRACE_MS
