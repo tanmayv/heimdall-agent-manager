@@ -6,6 +6,7 @@ import "core:net"
 import "core:strings"
 import "core:sync"
 import "core:time"
+import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import dbt "odin_test:hub/platform/dbtelemetry"
 import metrics "odin_test:lib/metrics"
@@ -215,6 +216,19 @@ Bridge_Runtime_Registry :: struct {
 	command_slots_used: int,
 	command_mutex: sync.Mutex,
 	command_cond: sync.Cond,
+	// Dedicated volatile channel vault rendezvous. Slots borrow an exchange's
+	// stack frame only while the exchange is active, under channel_vault_mutex.
+	channel_vault_mutex: sync.Mutex,
+	channel_vault_cond: sync.Cond,
+	channel_vault_pending: [64]^Channel_Vault_Pending,
+}
+
+Channel_Vault_Pending :: struct {
+	connection: ^Bridge_Runtime_Connection,
+	request_id, operation, scope_digest: string,
+	started: time.Tick,
+	timeout: time.Duration,
+	result: contracts.Bot_Channel_Vault_Result,
 }
 
 bridge_runtime_registry_command_lock :: proc(r: ^Bridge_Runtime_Registry) { if r != nil do sync.lock(&r.command_mutex) }
@@ -310,6 +324,9 @@ bridge_runtime_connection_quiesce :: proc(r: ^Bridge_Runtime_Registry, c: ^Bridg
 
 bridge_runtime_connection_retire :: proc(r: ^Bridge_Runtime_Registry, c: ^Bridge_Runtime_Connection) {
 	sync.atomic_store(&c.retired, true)
+	sync.lock(&r.channel_vault_mutex)
+	sync.cond_broadcast(&r.channel_vault_cond)
+	sync.unlock(&r.channel_vault_mutex)
 	bridge_runtime_connection_quiesce(r, c)
 	connection_state_lock(c)
 	for key, state in c.instances {

@@ -797,6 +797,11 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection, secure_form_generation := 
 				delete(text)
 				continue
 			}
+			if bridge_bot_channel_vault_receive(conn, text) {
+				delete(text)
+				if sync.atomic_load(&bridge_hub_traffic_stopped) do break
+				continue
+			}
 			if hub_command_frame_is_chunk(text) {
 				// A chunk frame is NEVER dispatched as a command. Only a complete
 				// stream is.
@@ -4795,7 +4800,7 @@ Bridge_Hello_Wire :: struct {
 // on every hello and on every legacy beat that carries features.
 // heartbeat_metadata_omission tells the hub this Bridge understands the bridge_ready
 // flag of the same name (contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION).
-BRIDGE_RUNTIME_FEATURES := [?]string{"capture_agent_pane", "get_agent_pane", "instance_reconfiguration_v1", "tool_stream_demand_v2", "mcp_transform_v1", contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION, contracts.BRIDGE_FEATURE_BOT_DELIVER_V1, contracts.BRIDGE_FEATURE_EVENT_PIPELINE_V1, contracts.BRIDGE_FEATURE_START_AGENT_V1, contracts.BRIDGE_FEATURE_DYNAMIC_SKILL_V2}
+BRIDGE_RUNTIME_FEATURES := [?]string{"capture_agent_pane", "get_agent_pane", "instance_reconfiguration_v1", "tool_stream_demand_v2", "mcp_transform_v1", contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION, contracts.BRIDGE_FEATURE_BOT_DELIVER_V1, contracts.BRIDGE_FEATURE_EVENT_PIPELINE_V1, contracts.BRIDGE_FEATURE_START_AGENT_V1, contracts.BRIDGE_FEATURE_DYNAMIC_SKILL_V2, contracts.BRIDGE_FEATURE_BOT_CHANNEL_VAULT_V1}
 bridge_runtime_features :: proc() -> []string {
 	features := make([dynamic]string, allocator = context.temp_allocator)
 	append(&features, ..BRIDGE_RUNTIME_FEATURES[:])

@@ -1034,6 +1034,17 @@ bridge_hub_send :: proc(conn: ^ws.Connection, text: string) -> bool {
 	return all_sent
 }
 
+// Scope-specific direct reply. This never enters worker completion capture
+// or generic chunking. It takes the same sequence lock as all Hub writes.
+bridge_hub_send_channel_vault :: proc(conn: ^ws.Connection, text: string) -> bool {
+	if len(text) == 0 || len(text) > contracts.BOT_CHANNEL_VAULT_MAX_FRAME ||
+	   len(text) > bridge_hub_runtime_chunk_payload_bytes() {return false}
+	sync.mutex_lock(&_bridge_hub_send_mu)
+	defer sync.mutex_unlock(&_bridge_hub_send_mu)
+	// The runtime connection carries send_disabled, checked under the writer lock.
+	return ws.send_text_sensitive(conn, text)
+}
+
 // bridge_hub_send_binary writes one BINARY frame (a pty_wire session frame) to the
 // hub-runtime WS. Binary frames are NEVER chunked: the kind:"chunk" re-splitter is a
 // text/base64 envelope and would reintroduce exactly the overhead REQ-PTY-NET-2 removes.

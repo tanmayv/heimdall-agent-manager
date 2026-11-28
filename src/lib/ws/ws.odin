@@ -1,5 +1,6 @@
 package ws
 
+import "core:crypto"
 import "core:fmt"
 import "core:net"
 import "core:os"
@@ -394,6 +395,11 @@ send_text :: proc(conn: ^Connection, text: string) -> bool {
 	return send_frame(conn, 0x1, text)
 }
 
+// For a bounded sensitive frame. The caller wipes its own wire buffer.
+send_text_sensitive :: proc(conn: ^Connection, text: string) -> bool {
+	return send_frame(conn, 0x1, text, sensitive = true)
+}
+
 send_text_with_deadline :: proc(conn: ^Connection, text: string, timeout: time.Duration) -> bool {
 	return send_frame(conn, 0x1, text, timeout)
 }
@@ -405,7 +411,7 @@ send_binary :: proc(conn: ^Connection, payload: []byte) -> bool {
 }
 
 @(private)
-send_frame :: proc(conn: ^Connection, opcode: u8, text: string, timeout: time.Duration = WRITE_DEADLINE) -> bool {
+send_frame :: proc(conn: ^Connection, opcode: u8, text: string, timeout: time.Duration = WRITE_DEADLINE, sensitive := false) -> bool {
 	if conn.send_disabled != nil && sync.atomic_load(conn.send_disabled) do return false
 	if !conn.connected do return false
 	n := len(text)
@@ -430,6 +436,7 @@ send_frame :: proc(conn: ^Connection, opcode: u8, text: string, timeout: time.Du
 	// REQ-SHELL-52A: send_all_tcp/send_all_tls BORROW this slice and free nothing on any
 	// exit, so without this every frame leaked header_len+len(text) bytes on the heap.
 	defer delete(frame)
+	defer if sensitive do crypto.zero_explicit(raw_data(frame), len(frame))
 	copy(frame[:header_len], header[:header_len])
 	copy(frame[header_len:], transmute([]byte)text)
 	ok := false

@@ -2,6 +2,7 @@ package http
 
 import "base:runtime"
 
+import "core:crypto"
 import "core:crypto/legacy/sha1"
 import base64 "core:encoding/base64"
 import "core:encoding/json"
@@ -2104,6 +2105,7 @@ bridge_ws_runtime_loop :: proc(
 		// Inbound half of the bound: a frame that arrives after the credential ran out
 		// is refused, never dispatched, so nothing slips in between timed checks.
 		if end := bridge_ws_session_check(h, connection, bridge_id, client, &next_revalidate); end != .None {
+			if len(text) > 0 do crypto.zero_explicit(raw_data(text), len(text))
 			delete(text)
 			reason = end
 			return
@@ -2333,6 +2335,7 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 	defer runtime.default_temp_allocator_temp_end(temp)
 	text := raw_text
 	if project_service.bridge_runtime_registry_generation(h.bridge_runtime_registry, bridge_id) != connection_generation {
+		if len(text) > 0 do crypto.zero_explicit(raw_data(text), len(text))
 		delete(text)
 		// A newer hello normally delivers connection_replaced while retiring us
 		// (accept_live). This covers the window where we observe the generation flip
@@ -2343,6 +2346,7 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		return false
 	}
 	type := json_string(text, "type")
+	chunked := false
 	// Chunk reassembly. A real chunk frame has kind:"chunk" and NO top-level
 	// "type" (its payload_fragment is base64, so it can never contain a "type"
 	// key) — that is what distinguishes it from a normal frame whose file
@@ -2374,6 +2378,7 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 			if !complete do return true
 			text = assembled
 			type = json_string(text, "type")
+			chunked = true
 		} else {
 			delete(kind)
 		}
@@ -2405,6 +2410,16 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 	context.allocator = frame_allocator
 
 	switch type {
+	case contracts.BOT_CHANNEL_VAULT_RESULT_FRAME:
+		defer crypto.zero_explicit(raw_data(text), len(text))
+		// No generic cache, acknowledgement, frame logging or chunk transport.
+		if !chunked && len(text) <= contracts.BOT_CHANNEL_VAULT_MAX_FRAME {
+			reply: contracts.Bot_Channel_Vault_Result
+			defer if len(reply.body) > 0 do crypto.zero_explicit(raw_data(reply.body), len(reply.body))
+			if json.unmarshal_string(text, &reply, .JSON, context.allocator) == nil {
+				_ = bridge_runtime_service.complete_bot_channel_vault(h.bridge_runtime_registry, bridge_id, connection_generation, reply)
+			}
+		}
 	case contracts.SECURE_FORM_REGISTER_FRAME:
 		secure_form_bridge_register(h, bridge_id, connection_generation, client, text)
 	case "stream_register", "stream_ended":

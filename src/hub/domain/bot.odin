@@ -33,6 +33,32 @@ bot_web_activation_destroy :: proc(row: ^Bot_Web_Activation) {
 	row^ = {}
 }
 
+// Payload-free evidence. Only canonical pairing, input persistence and the
+// trusted turn router can write these records, respectively.
+Bot_Channel_Fresh_Binding :: struct {
+	binding_id: string,
+	activation_generation, binding_generation: i64,
+}
+Bot_Channel_Origin :: struct {
+	inbound_message_id, binding_id, provider_update_key: string,
+}
+bot_channel_origin_destroy :: proc(row: ^Bot_Channel_Origin) {
+	delete(row.inbound_message_id)
+	delete(row.binding_id)
+	delete(row.provider_update_key)
+	row^ = {}
+}
+
+Bot_Channel_Reply_Source :: struct {
+	origin: Bot_Channel_Origin,
+	source_proof: string,
+}
+bot_channel_reply_source_destroy :: proc(row: ^Bot_Channel_Reply_Source) {
+	bot_channel_origin_destroy(&row.origin)
+	delete(row.source_proof)
+	row^ = {}
+}
+
 Bot_Placement_Tier :: enum {
 	Preferred,
 	Allowed,

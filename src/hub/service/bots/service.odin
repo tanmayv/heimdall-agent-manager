@@ -16,6 +16,8 @@ import events "odin_test:hub/service/events"
 import channel "odin_test:hub/service/channel"
 
 Bots_Service :: struct {
+	channel_vault_directory: ^iface.Vault_Directory_Repository,
+	channel_vault_exchange: Channel_Vault_Exchange,
  placement: ^placement.Service,
 	ui_origin: string,
 	media_send_budget_ms, media_min_call_ms: i64,

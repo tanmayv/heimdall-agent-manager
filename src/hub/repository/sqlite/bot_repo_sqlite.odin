@@ -16,6 +16,13 @@ Bot_Repo_SQLite :: struct {
 new_bot_repository :: proc(impl: ^Bot_Repo_SQLite, conn: ^Conn) -> iface.Bot_Repository {
 	impl.conn = conn
 	return iface.Bot_Repository {
+		pairing_insert_fresh = pairing_insert_fresh_sqlite,
+		binding_activate_fresh = binding_activate_fresh_sqlite,
+		conversion_binding_get = bot_conversion_binding_get_sqlite,
+		conversion_origin_exists = bot_conversion_origin_exists_sqlite,
+		conversion_origin_insert = bot_conversion_origin_insert_sqlite,
+		conversion_reply_insert = bot_conversion_reply_insert_sqlite,
+		conversion_reply_source = bot_conversion_reply_source_sqlite,
 		web_activation_get = bot_web_activation_get_sqlite,
 		web_activation_insert = bot_web_activation_insert_sqlite,
 		web_activation_set_enabled = bot_web_activation_set_enabled_sqlite,
@@ -570,6 +577,26 @@ pairing_insert_sqlite :: proc(ctx: rawptr, p: domain.Channel_Pairing) -> domain.
 	return err
 }
 
+// The new invitation and its activation generation are stored in one guarded
+// insert. An existing code cannot acquire fresh authority retroactively.
+pairing_insert_fresh_sqlite :: proc(ctx: rawptr, p: domain.Channel_Pairing, generation: i64) -> domain.Domain_Error {
+	if generation < 1 || p.consumed_at != "" || p.code_hash == "" || p.created_at == "" || p.expires_at <= p.created_at ||
+	   (p.provider != domain.CHANNEL_PROVIDER_TELEGRAM && p.provider != domain.CHANNEL_PROVIDER_WHATSAPP) {
+		return domain.domain_error(.Validation_Failed,"invalid fresh channel invitation")
+	}
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+	gen := fmt.tprintf("%d",generation)
+	changes, err := bot_repo_write(bot_repo_conn(ctx),
+		`INSERT INTO channel_pairings (code_hash, owner_user_id, bot_id, provider, created_at, expires_at, activation_generation)
+		  SELECT ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (
+		    SELECT 1 FROM bot_web_activations WHERE owner_user_id=? AND bot_id=? AND enabled=1 AND generation=?
+		  );`,{p.code_hash,p.owner_user_id,p.bot_id,p.provider,p.created_at,p.expires_at,gen,p.owner_user_id,p.bot_id,gen})
+	if err.code != .None do return err
+	if changes != 1 do return domain.domain_error(.Conflict,"channel activation generation is inactive")
+	return {}
+}
+
 pairing_get_sqlite :: proc(ctx: rawptr, code_hash: string) -> (domain.Channel_Pairing, bool, domain.Domain_Error) {
 	conn := bot_repo_conn(ctx)
 	rows, err := bot_repo_list_channel_pairing(
@@ -1086,6 +1113,18 @@ binding_activate_sqlite :: proc(
 	had_previous: bool,
 	err: domain.Domain_Error,
 ) {
+	return binding_activate_with_conversion_sqlite(ctx,binding,pairing_code_hash,consumed_at)
+}
+
+binding_activate_fresh_sqlite :: proc(ctx: rawptr, binding: domain.Channel_Binding, code_hash, consumed_at: string, activation_generation, binding_generation: i64) -> (domain.Channel_Binding,bool,domain.Domain_Error) {
+	if activation_generation < 1 || binding_generation < 1 || binding.state != .Active || binding.binding_id == "" ||
+	   (binding.provider != domain.CHANNEL_PROVIDER_TELEGRAM && binding.provider != domain.CHANNEL_PROVIDER_WHATSAPP) {
+		return {},false,domain.domain_error(.Validation_Failed,"invalid channel conversion generation")
+	}
+	return binding_activate_with_conversion_sqlite(ctx,binding,code_hash,consumed_at,activation_generation,binding_generation)
+}
+
+binding_activate_with_conversion_sqlite :: proc(ctx: rawptr, binding: domain.Channel_Binding, pairing_code_hash, consumed_at: string, activation_generation:i64=0,binding_generation:i64=0) -> (domain.Channel_Binding,bool,domain.Domain_Error) {
 	conn := bot_repo_conn(ctx)
 	if conn == nil || conn.db == nil do return {}, false, bot_repo_error(conn)
 	guard := tx_repository_enter()
@@ -1097,11 +1136,20 @@ binding_activate_sqlite :: proc(
 	committed := false
 	defer if !committed do exec(conn, "ROLLBACK;")
 
+	if activation_generation > 0 {
+		activity, found, err := bot_web_activation_get_sqlite(ctx,binding.owner_user_id)
+		defer domain.bot_web_activation_destroy(&activity)
+		if err.code != .None do return {},false,err
+		if !found || !activity.enabled || activity.bot_id != binding.bot_id || activity.generation != activation_generation {
+			return {},false,domain.domain_error(.Conflict,"channel activation generation is inactive")
+		}
+	}
+
 	// Pairing ownership and expiry are checked atomically with consumption.
 	count, consume_err := bot_repo_write(
 		conn,
-		"UPDATE channel_pairings SET consumed_at = ? WHERE code_hash = ? AND owner_user_id = ? AND bot_id = ? AND provider = ? AND consumed_at = '' AND expires_at > ?;",
-		{consumed_at, pairing_code_hash, binding.owner_user_id, binding.bot_id, binding.provider, consumed_at},
+		"UPDATE channel_pairings SET consumed_at = ? WHERE code_hash = ? AND owner_user_id = ? AND bot_id = ? AND provider = ? AND consumed_at = '' AND expires_at > ? AND activation_generation = ?;",
+		{consumed_at, pairing_code_hash, binding.owner_user_id, binding.bot_id, binding.provider, consumed_at, fmt.tprintf("%d",activation_generation)},
 	)
 	if consume_err.code != .None do return {}, false, consume_err
 	if count != 1 do return {}, false, domain.domain_error(.Conflict, "pairing is unavailable")
@@ -1134,6 +1182,12 @@ binding_activate_sqlite :: proc(
 		},
 	)
 	if insert_err.code != .None do return {}, false, insert_err
+	if activation_generation > 0 {
+		grant_err := bot_conversion_binding_insert_sqlite(ctx,{
+			binding_id=binding.binding_id,activation_generation=activation_generation,binding_generation=binding_generation,
+		})
+		if grant_err.code != .None do return {}, false, grant_err
+	}
 	if !exec(conn, "COMMIT;") do return {}, false, bot_repo_error(conn)
 	committed = true
 	keep_previous = true
@@ -1245,7 +1299,7 @@ pairing_consume_sqlite :: proc(ctx: rawptr, code_hash, consumed_at: string) -> (
 	defer tx_repository_leave(guard)
 
 	count, err := bot_repo_write(bot_repo_conn(ctx),
-	"UPDATE channel_pairings SET consumed_at = ? WHERE code_hash = ? AND consumed_at = '' AND expires_at > ?;",
+	"UPDATE channel_pairings SET consumed_at = ? WHERE code_hash = ? AND consumed_at = '' AND expires_at > ? AND activation_generation = 0;",
 	{consumed_at, code_hash, consumed_at})
 	return count == 1, err
 }

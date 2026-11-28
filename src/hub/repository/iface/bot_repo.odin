@@ -3,6 +3,13 @@ package iface
 import domain "odin_test:hub/domain"
 
 Bot_Repository :: struct {
+	pairing_insert_fresh: proc(ctx: rawptr, pairing: domain.Channel_Pairing, activation_generation: i64) -> domain.Domain_Error,
+	binding_activate_fresh: proc(ctx: rawptr, binding: domain.Channel_Binding, code_hash, consumed_at: string, activation_generation, binding_generation: i64) -> (domain.Channel_Binding,bool,domain.Domain_Error),
+	conversion_binding_get: proc(ctx: rawptr, binding_id: string) -> (domain.Bot_Channel_Fresh_Binding,bool,domain.Domain_Error),
+	conversion_origin_exists: proc(ctx: rawptr, binding_id, event_id, inbound_id: string) -> (bool,domain.Domain_Error),
+	conversion_origin_insert: proc(ctx: rawptr, row: domain.Bot_Channel_Origin) -> domain.Domain_Error,
+	conversion_reply_insert: proc(ctx: rawptr, reply_id, inbound_id, source_proof: string) -> domain.Domain_Error,
+	conversion_reply_source: proc(ctx: rawptr, reply_id: string) -> (domain.Bot_Channel_Reply_Source,bool,domain.Domain_Error),
 	web_activation_get: proc(ctx: rawptr, owner: string) -> (domain.Bot_Web_Activation, bool, domain.Domain_Error),
 	web_activation_insert: proc(ctx: rawptr, row: domain.Bot_Web_Activation) -> domain.Domain_Error,
 	web_activation_set_enabled: proc(ctx: rawptr, owner: string, enabled: bool, expected_generation: i64) -> (bool, domain.Domain_Error),
@@ -791,4 +798,36 @@ bot_web_activation_insert :: proc(repo: ^Bot_Repository, row: domain.Bot_Web_Act
 bot_web_activation_set_enabled :: proc(repo: ^Bot_Repository, owner: string, enabled: bool, expected_generation: i64) -> (bool, domain.Domain_Error) {
 	if repo == nil || repo.web_activation_set_enabled == nil do return false, domain.domain_error(.Internal_Error, "bot web activation repository is not configured")
 	return repo.web_activation_set_enabled(repo.ctx, owner, enabled, expected_generation)
+}
+
+// These are internal insert-only writes. Pairing, canonical inbound and routing
+// callers include the evidence in the same unit of work as their own records.
+bot_channel_conversion_pairing_insert_fresh :: proc(repo: ^Bot_Repository, pairing: domain.Channel_Pairing, activation_generation: i64) -> domain.Domain_Error {
+	if repo == nil || repo.pairing_insert_fresh == nil do return domain.domain_error(.Internal_Error,"channel conversion repository is not configured")
+	return repo.pairing_insert_fresh(repo.ctx,pairing,activation_generation)
+}
+bot_channel_conversion_binding_activate_fresh :: proc(repo: ^Bot_Repository, binding: domain.Channel_Binding, code_hash, consumed_at: string, activation_generation, binding_generation: i64) -> (domain.Channel_Binding,bool,domain.Domain_Error) {
+	if repo == nil || repo.binding_activate_fresh == nil do return {},false,domain.domain_error(.Internal_Error,"channel conversion repository is not configured")
+	return repo.binding_activate_fresh(repo.ctx,binding,code_hash,consumed_at,activation_generation,binding_generation)
+}
+bot_channel_conversion_binding_get :: proc(repo: ^Bot_Repository, id: string) -> (domain.Bot_Channel_Fresh_Binding,bool,domain.Domain_Error) {
+	if repo == nil || repo.conversion_binding_get == nil do return {},false,domain.domain_error(.Internal_Error,"channel conversion repository is not configured")
+	return repo.conversion_binding_get(repo.ctx,id)
+}
+bot_channel_conversion_origin_insert :: proc(repo: ^Bot_Repository, row: domain.Bot_Channel_Origin) -> domain.Domain_Error {
+	if repo == nil || repo.conversion_origin_insert == nil do return domain.domain_error(.Internal_Error,"channel conversion repository is not configured")
+	return repo.conversion_origin_insert(repo.ctx,row)
+}
+bot_channel_conversion_reply_insert :: proc(repo: ^Bot_Repository, reply_id, inbound_id, source_proof: string) -> domain.Domain_Error {
+	if repo == nil || repo.conversion_reply_insert == nil do return domain.domain_error(.Internal_Error,"channel conversion repository is not configured")
+	return repo.conversion_reply_insert(repo.ctx,reply_id,inbound_id,source_proof)
+}
+bot_channel_conversion_reply_source :: proc(repo: ^Bot_Repository, reply_id: string) -> (domain.Bot_Channel_Reply_Source,bool,domain.Domain_Error) {
+	if repo == nil || repo.conversion_reply_source == nil do return {},false,domain.domain_error(.Internal_Error,"channel conversion repository is not configured")
+	return repo.conversion_reply_source(repo.ctx,reply_id)
+}
+
+bot_channel_conversion_origin_exists :: proc(repo: ^Bot_Repository, binding_id, event_id, inbound_id: string) -> (bool,domain.Domain_Error) {
+	if repo == nil || repo.conversion_origin_exists == nil do return false,domain.domain_error(.Internal_Error,"channel conversion repository is not configured")
+	return repo.conversion_origin_exists(repo.ctx,binding_id,event_id,inbound_id)
 }

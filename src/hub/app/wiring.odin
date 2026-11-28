@@ -717,7 +717,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.bot_command_sink = bridge_command_sink
 	graph.placement=placement.new_service(&graph.repos.bridges,&graph.repos.agents,&graph.providers,&graph.bridge_runtime_registry,billing_service.entitlement_lookup(&graph.billing))
  graph.placement_handlers={auth=&graph.auth,placement=&graph.placement}
-	graph.bots = bots_service.Bots_Service{placement=&graph.placement,ui_origin = config.ui_origin, repo = &graph.bot_repo, uow_factory = &graph.uow_factory, event_bus = &graph.event_bus, experiments = &graph.experiment_repo, entitlements = billing_service.entitlement_lookup(&graph.billing), agents = &graph.agents, providers = &graph.providers, bridges = &graph.repos.bridges, registry = &graph.bridge_runtime_registry, command_sink = &graph.bot_command_sink, adapter = nil, clock = &graph.clock, ids = &graph.ids, timers = config.bot_timers}
+	graph.bots = bots_service.Bots_Service{channel_vault_directory=&graph.vault_directory_repo, channel_vault_exchange={ctx=&graph.bridge_runtime_registry, run=exchange_channel_vault}, placement=&graph.placement,ui_origin = config.ui_origin, repo = &graph.bot_repo, uow_factory = &graph.uow_factory, event_bus = &graph.event_bus, experiments = &graph.experiment_repo, entitlements = billing_service.entitlement_lookup(&graph.billing), agents = &graph.agents, providers = &graph.providers, bridges = &graph.repos.bridges, registry = &graph.bridge_runtime_registry, command_sink = &graph.bot_command_sink, adapter = nil, clock = &graph.clock, ids = &graph.ids, timers = config.bot_timers}
 	graph.agents.runtime_policy = {ctx=&graph.bots, check=bots_service.check_web_runtime_policy}
 	if config.telegram_bot_token != "" {
 		graph.telegram = channel.Telegram_Adapter{token = config.telegram_bot_token, api_base = config.telegram_api_base}
@@ -1623,4 +1623,9 @@ action_unread_delivery :: proc(ctx:rawptr,uow:^iface.Unit_Of_Work,owner,id:strin
 }
 delivery_messages_read :: proc(ctx:rawptr,uow:^iface.Unit_Of_Work,owner:domain.User_ID,ids:[]string)->domain.Domain_Error {
  return delivery.on_messages_read((^delivery.Service)(ctx),uow,owner,ids)
+}
+
+// Channel text only travels on a live, generation-pinned bridge connection.
+exchange_channel_vault :: proc(ctx: rawptr, generation: int, req: contracts.Bot_Channel_Vault_Request) -> (contracts.Bot_Channel_Vault_Result, bool) {
+	return bridge_runtime_service.exchange_bot_channel_vault((^project_service.Bridge_Runtime_Registry)(ctx), generation, req)
 }
