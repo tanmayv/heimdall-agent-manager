@@ -23,6 +23,8 @@ ACP_SEND_NOW_INPUT_PREFIX :: "batch_"
 // The batch selection itself is inbox state (Bridge_Inbox_Send_Now).
 
 acp_send_now_active :: proc(r: ^ACP_Runtime) -> bool {
+    // Runtime error paths also run for partial runtimes (no claimed inbox).
+    if r.inbox == nil do return false
     s := r.inbox.send_now.state
     return r.inbox.send_now.batch_id != "" && (s == "waiting" || s == "steering" || s == "cancelling")
 }
