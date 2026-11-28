@@ -280,7 +280,7 @@ test_codex_large_image_completion_reaches_live_inventory :: proc(t: ^testing.T) 
         else do delete_key(&start, "agent_id")
         raw, _ := json.marshal(start)
         mapped, err := ext.codex_map_hook(string(raw), bridge_format_rfc3339_utc_ms(now))
-        testing.expect_value(t, err, ext.Codex_Error.None)
+        testing.expect_value(t, err, ext.Hook_Error.None)
         res := bridge_ext_ingest(Bridge_Local_Agent_Token_Record{agent_instance_id=target, role=.Agent},
             ext.event_params(mapped.events[:]), bridge_runtime_now_ms())
         testing.expect_value(t, res.accepted, 1)
@@ -289,7 +289,7 @@ test_codex_large_image_completion_reaches_live_inventory :: proc(t: ^testing.T) 
     testing.expect_value(t, len(bridge_tool_tracker.tool_live.entries[id].active), 2)
     raw, _ := json.marshal(end)
     mapped, err := ext.codex_map_hook(string(raw), bridge_format_rfc3339_utc_ms(now+1000))
-    testing.expect_value(t, err, ext.Codex_Error.None)
+    testing.expect_value(t, err, ext.Hook_Error.None)
     testing.expect_value(t, len(mapped.events), 1)
     if len(mapped.events) != 1 do return
     for _ in 0..<2 {
@@ -353,15 +353,15 @@ orphan_replay :: proc(t: ^testing.T, id, provider, raw: string, ts_ms: i64) {
     switch provider {
     case "claude":
         m, err := ext.claude_map_hook(raw, ts)
-        testing.expect_value(t, err, ext.Claude_Error.None)
+        testing.expect_value(t, err, ext.Hook_Error.None)
         events = m.events
     case "codex":
         m, err := ext.codex_map_hook(raw, ts)
-        testing.expect_value(t, err, ext.Codex_Error.None)
+        testing.expect_value(t, err, ext.Hook_Error.None)
         events = m.events
     case "antigravity":
         m, err := ext.antigravity_map_hook(raw, ts)
-        testing.expect_value(t, err, ext.Antigravity_Error.None)
+        testing.expect_value(t, err, ext.Hook_Error.None)
         events = m.events
     }
     if len(events) == 0 do return

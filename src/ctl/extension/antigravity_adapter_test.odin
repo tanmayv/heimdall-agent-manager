@@ -47,8 +47,7 @@ test_antigravity_pre_invocation_maps_hello_session_and_activity :: proc(t: ^test
 
 	raw := #load("testdata/antigravity/pre_invocation.json", string)
 	mapped, err := antigravity_map_hook(raw, TS)
-	testing.expect_value(t, err, Antigravity_Error.None)
-	testing.expect_value(t, mapped.hook, Antigravity_Hook.Pre_Invocation)
+	testing.expect_value(t, err, Hook_Error.None)
 	testing.expect_value(t, mapped.is_permission, false)
 	testing.expect_value(t, len(mapped.events), 3)
 	if len(mapped.events) != 3 do return
@@ -94,7 +93,7 @@ test_antigravity_subsequent_pre_invocation_only_emits_activity :: proc(t: ^testi
 
 	raw := `{"hookEventName":"PreInvocation","conversationId":"s1","stepIdx":5,"invocationNum":2}`
 	mapped, err := antigravity_map_hook(raw, TS)
-	testing.expect_value(t, err, Antigravity_Error.None)
+	testing.expect_value(t, err, Hook_Error.None)
 	testing.expect_value(t, len(mapped.events), 1)
 	if len(mapped.events) != 1 do return
 
@@ -111,7 +110,7 @@ test_antigravity_pre_tool_use_maps_tool_start :: proc(t: ^testing.T) {
 
 	raw := #load("testdata/antigravity/pre_tool_use.json", string)
 	mapped, err := antigravity_map_hook(raw, TS)
-	testing.expect_value(t, err, Antigravity_Error.None)
+	testing.expect_value(t, err, Hook_Error.None)
 	testing.expect_value(t, mapped.is_permission, false)
 	testing.expect_value(t, len(mapped.events), 1)
 	if len(mapped.events) != 1 do return
@@ -136,7 +135,7 @@ test_antigravity_post_tool_use_maps_tool_end :: proc(t: ^testing.T) {
 
 	raw := #load("testdata/antigravity/post_tool_use.json", string)
 	mapped, err := antigravity_map_hook(raw, TS)
-	testing.expect_value(t, err, Antigravity_Error.None)
+	testing.expect_value(t, err, Hook_Error.None)
 	testing.expect_value(t, len(mapped.events), 1)
 	if len(mapped.events) != 1 do return
 
@@ -162,7 +161,7 @@ test_antigravity_post_tool_use_error_maps_tool_end_error :: proc(t: ^testing.T) 
 
 	raw := `{"hookEventName":"PostToolUse","conversationId":"s1","stepIdx":3,"toolCall":{"name":"view_file"},"error":"File not found"}`
 	mapped, err := antigravity_map_hook(raw, TS)
-	testing.expect_value(t, err, Antigravity_Error.None)
+	testing.expect_value(t, err, Hook_Error.None)
 	testing.expect_value(t, len(mapped.events), 1)
 	if len(mapped.events) != 1 do return
 
@@ -186,7 +185,7 @@ test_antigravity_stop_maps_turn_idle_without_session_end :: proc(t: ^testing.T) 
 	// session-termination signal, so a session end would wipe live subagent calls.
 	raw := #load("testdata/antigravity/stop.json", string)
 	mapped, err := antigravity_map_hook(raw, TS)
-	testing.expect_value(t, err, Antigravity_Error.None)
+	testing.expect_value(t, err, Hook_Error.None)
 	testing.expect_value(t, len(mapped.events), 1)
 	if len(mapped.events) != 1 do return
 
@@ -203,7 +202,7 @@ test_antigravity_stop_maps_turn_idle_without_session_end :: proc(t: ^testing.T) 
 	for reason in ([]string{"model_stop", "max_steps_exceeded", "error", "user_canceled"}) {
 		r := fmt.tprintf(`{{"hookEventName":"Stop","conversationId":"s1","terminationReason":"%s","fullyIdle":true}}`, reason)
 		m, merr := antigravity_map_hook(r, TS)
-		testing.expect_value(t, merr, Antigravity_Error.None)
+		testing.expect_value(t, merr, Hook_Error.None)
 		testing.expect_value(t, len(m.events), 1)
 		for ev_str in m.events {
 			ev, _ := contracts.ext_parse_event(ev_str)
@@ -219,7 +218,7 @@ test_antigravity_child_stop_maps_subagent_stop :: proc(t: ^testing.T) {
 
 	raw := `{"hookEventName":"Stop","conversationId":"s_parent","agentId":"agt_sub123","agentType":"research","terminationReason":"model_stop","fullyIdle":true}`
 	mapped, err := antigravity_map_hook(raw, TS)
-	testing.expect_value(t, err, Antigravity_Error.None)
+	testing.expect_value(t, err, Hook_Error.None)
 	testing.expect_value(t, len(mapped.events), 1)
 	if len(mapped.events) != 1 do return
 	ev, e := contracts.ext_parse_event(mapped.events[0])
@@ -241,7 +240,7 @@ test_antigravity_fixture_background_subagent_session_never_ends :: proc(t: ^test
 	for line in strings.split_lines_iterator(&fixture) {
 		if strings.trim_space(line) == "" do continue
 		mapped, err := antigravity_map_hook(line, TS)
-		testing.expect_value(t, err, Antigravity_Error.None)
+		testing.expect_value(t, err, Hook_Error.None)
 		for ev_str in mapped.events {
 			ev, perr := contracts.ext_parse_event(ev_str)
 			testing.expect_value(t, perr, contracts.Ext_Error.None)
@@ -271,7 +270,7 @@ test_antigravity_permission_request_in_ask_mode :: proc(t: ^testing.T) {
 
 	raw := #load("testdata/antigravity/permission_request.json", string)
 	mapped, err := antigravity_map_hook(raw, TS, 10_000, "blk_agy_test")
-	testing.expect_value(t, err, Antigravity_Error.None)
+	testing.expect_value(t, err, Hook_Error.None)
 	testing.expect_value(t, mapped.is_permission, true)
 	testing.expect_value(t, len(mapped.events), 1)
 	if len(mapped.events) != 1 do return
@@ -300,12 +299,12 @@ test_antigravity_permission_output_formats :: proc(t: ^testing.T) {
 	testing.expect_value(t, antigravity_permission_output("ask", ""), `{"decision":"ask"}`)
 
 	// from bridge response
-	testing.expect_value(t, antigravity_permission_output_from_response(`{"ok":true,"data":{"decision":"allow"}}`), `{"decision":"allow"}`)
-	testing.expect_value(t, antigravity_permission_output_from_response(`{"ok":true,"data":{"decision":"deny","message":"Nope"}}`), `{"decision":"deny","reason":"Nope"}`)
-	testing.expect_value(t, antigravity_permission_output_from_response(`{"ok":true,"data":{"data":{"decision":"allow"}}}`), `{"decision":"allow"}`)
-	testing.expect_value(t, antigravity_permission_output_from_response(`{"ok":true,"data":{"decision":"none"}}`), `{"decision":"ask"}`)
-	testing.expect_value(t, antigravity_permission_output_from_response(`{"ok":false}`), `{"decision":"ask"}`)
-	testing.expect_value(t, antigravity_permission_output_from_response(""), `{"decision":"ask"}`)
+	testing.expect_value(t, antigravity_output_from_response(`{"ok":true,"data":{"decision":"allow"}}`), `{"decision":"allow"}`)
+	testing.expect_value(t, antigravity_output_from_response(`{"ok":true,"data":{"decision":"deny","message":"Nope"}}`), `{"decision":"deny","reason":"Nope"}`)
+	testing.expect_value(t, antigravity_output_from_response(`{"ok":true,"data":{"data":{"decision":"allow"}}}`), `{"decision":"allow"}`)
+	testing.expect_value(t, antigravity_output_from_response(`{"ok":true,"data":{"decision":"none"}}`), `{"decision":"ask"}`)
+	testing.expect_value(t, antigravity_output_from_response(`{"ok":false}`), `{"decision":"ask"}`)
+	testing.expect_value(t, antigravity_output_from_response(""), `{"decision":"ask"}`)
 }
 
 @(test)
@@ -357,7 +356,7 @@ test_antigravity_permission_request_timeout_clamping_and_stable_blocker :: proc(
 
 	// 1. Timeout > 300s is clamped to 300s (300,000ms)
 	mapped_large, err_large := antigravity_map_hook(raw, TS, 500_000, "blk_custom")
-	testing.expect_value(t, err_large, Antigravity_Error.None)
+	testing.expect_value(t, err_large, Hook_Error.None)
 	testing.expect_value(t, mapped_large.is_permission, true)
 	if len(mapped_large.events) == 1 {
 		v, _ := json.parse_string(mapped_large.events[0], json.DEFAULT_SPECIFICATION, true)
@@ -367,26 +366,28 @@ test_antigravity_permission_request_timeout_clamping_and_stable_blocker :: proc(
 		testing.expect_value(t, json_get_string(p, "blocker_id"), "blk_custom")
 	}
 
-	// 2. Timeout <= 0 defaults to 300s (300,000ms)
-	mapped_zero, err_zero := antigravity_map_hook(raw, TS, 0, "blk_custom2")
-	testing.expect_value(t, err_zero, Antigravity_Error.None)
+	// 2. Without relay fields (no timeout, no blocker) the request maps without
+	//    them, exactly like claude and codex: the shared hook core supplies both.
+	mapped_zero, err_zero := antigravity_map_hook(raw, TS, 0, "")
+	testing.expect_value(t, err_zero, Hook_Error.None)
+	testing.expect_value(t, len(mapped_zero.events), 1)
 	if len(mapped_zero.events) == 1 {
 		v, _ := json.parse_string(mapped_zero.events[0], json.DEFAULT_SPECIFICATION, true)
 		p := json_get_object(v.(json.Object), "payload")
-		timeout, _ := json_get_int(p, "timeout_ms")
-		testing.expect_value(t, timeout, 300_000)
-		testing.expect_value(t, json_get_string(p, "blocker_id"), "blk_custom2")
+		testing.expect(t, !json_has(p, "timeout_ms"), "no timeout without a relay")
+		testing.expect(t, !json_has(p, "blocker_id"), "no blocker without a relay")
 	}
 
-	// 3. Empty blocker_id generates a stable blocker_id starting with blk_
-	mapped_gen, err_gen := antigravity_map_hook(raw, TS, 10_000, "")
-	testing.expect_value(t, err_gen, Antigravity_Error.None)
-	if len(mapped_gen.events) == 1 {
-		v, _ := json.parse_string(mapped_gen.events[0], json.DEFAULT_SPECIFICATION, true)
-		p := json_get_object(v.(json.Object), "payload")
-		bid := json_get_string(p, "blocker_id")
-		testing.expect(t, strings.has_prefix(bid, "blk_"))
-	}
+	// 3. The relay sends a generated blk_ id and the default 300s budget.
+	agy_fake_reset(`{"ok":true,"data":{"decision":"none"}}`, true)
+	out := hook_run("antigravity", raw, ENV, agy_fake_send)
+	testing.expect_value(t, out, `{"decision":"ask"}`)
+	testing.expect_value(t, agy_fake_calls, 1)
+	v, _ := json.parse_string(agy_fake_params, json.DEFAULT_SPECIFICATION, true)
+	p := json_get_object(v.(json.Object), "payload")
+	testing.expect(t, strings.has_prefix(json_get_string(p, "blocker_id"), "blk_"))
+	timeout, _ := json_get_int(p, "timeout_ms")
+	testing.expect_value(t, timeout, PERMISSION_RELAY_TIMEOUT_MS)
 }
 
 @(test)
@@ -397,7 +398,7 @@ test_antigravity_destructive_tools_trigger_permission_in_ask_mode :: proc(t: ^te
 	// write_to_file in ask mode triggers permission
 	raw_write := `{"hookEventName":"PreToolUse","conversationId":"s1","permissionMode":"ask","stepIdx":3,"toolCall":{"name":"write_to_file","args":{"TargetFile":"/repo/test.txt","CodeContent":"hello"}}}`
 	mapped_w, err_w := antigravity_map_hook(raw_write, TS)
-	testing.expect_value(t, err_w, Antigravity_Error.None)
+	testing.expect_value(t, err_w, Hook_Error.None)
 	testing.expect_value(t, mapped_w.is_permission, true)
 	if len(mapped_w.events) == 1 {
 		ev, _ := contracts.ext_parse_event(mapped_w.events[0])
@@ -408,7 +409,7 @@ test_antigravity_destructive_tools_trigger_permission_in_ask_mode :: proc(t: ^te
 	// replace_file_content in ask mode triggers permission
 	raw_replace := `{"hookEventName":"PreToolUse","conversationId":"s1","permissionMode":"ask","stepIdx":4,"toolCall":{"name":"replace_file_content","args":{"TargetFile":"/repo/test.txt","TargetContent":"a","ReplacementContent":"b"}}}`
 	mapped_r, err_r := antigravity_map_hook(raw_replace, TS)
-	testing.expect_value(t, err_r, Antigravity_Error.None)
+	testing.expect_value(t, err_r, Hook_Error.None)
 	testing.expect_value(t, mapped_r.is_permission, true)
 	if len(mapped_r.events) == 1 {
 		ev, _ := contracts.ext_parse_event(mapped_r.events[0])
@@ -419,7 +420,7 @@ test_antigravity_destructive_tools_trigger_permission_in_ask_mode :: proc(t: ^te
 	// Non-destructive view_file in ask mode does NOT trigger permission (emits tool.start)
 	raw_view := `{"hookEventName":"PreToolUse","conversationId":"s1","permissionMode":"ask","stepIdx":5,"toolCall":{"name":"view_file","args":{"AbsolutePath":"/repo/test.txt"}}}`
 	mapped_v, err_v := antigravity_map_hook(raw_view, TS)
-	testing.expect_value(t, err_v, Antigravity_Error.None)
+	testing.expect_value(t, err_v, Hook_Error.None)
 	testing.expect_value(t, mapped_v.is_permission, false)
 	if len(mapped_v.events) == 1 {
 		ev, _ := contracts.ext_parse_event(mapped_v.events[0])
@@ -430,7 +431,7 @@ test_antigravity_destructive_tools_trigger_permission_in_ask_mode :: proc(t: ^te
 	// Destructive write_to_file when permissionMode is not ask (e.g. empty or allow) does NOT trigger permission
 	raw_write_noask := `{"hookEventName":"PreToolUse","conversationId":"s1","permissionMode":"allow","stepIdx":6,"toolCall":{"name":"write_to_file","args":{"TargetFile":"/repo/test.txt","CodeContent":"hello"}}}`
 	mapped_wna, err_wna := antigravity_map_hook(raw_write_noask, TS)
-	testing.expect_value(t, err_wna, Antigravity_Error.None)
+	testing.expect_value(t, err_wna, Hook_Error.None)
 	testing.expect_value(t, mapped_wna.is_permission, false)
 	if len(mapped_wna.events) == 1 {
 		ev, _ := contracts.ext_parse_event(mapped_wna.events[0])
@@ -505,20 +506,20 @@ test_antigravity_bounds_and_error_handling :: proc(t: ^testing.T) {
 
 	// Malformed JSON
 	_, err := antigravity_map_hook("invalid json", TS)
-	testing.expect_value(t, err, Antigravity_Error.Malformed_Json)
+	testing.expect_value(t, err, Hook_Error.Malformed_Json)
 
 	// Missing conversationId
 	_, err2 := antigravity_map_hook(`{"hookEventName":"PreInvocation"}`, TS)
-	testing.expect_value(t, err2, Antigravity_Error.Malformed_Json)
+	testing.expect_value(t, err2, Hook_Error.Malformed_Json)
 
 	// Input exceeding 16MB limit
 	too_large := strings.repeat("x", ANTIGRAVITY_HOOK_INPUT_MAX + 1)
 	_, err3 := antigravity_map_hook(too_large, TS)
-	testing.expect_value(t, err3, Antigravity_Error.Too_Large)
+	testing.expect_value(t, err3, Hook_Error.Too_Large)
 
 	// Unknown hook produces no events
 	unknown, err4 := antigravity_map_hook(`{"conversationId":"s1","hookEventName":"SomeUnknownEvent"}`, TS)
-	testing.expect_value(t, err4, Antigravity_Error.None)
+	testing.expect_value(t, err4, Hook_Error.None)
 	testing.expect_value(t, len(unknown.events), 0)
 
 	// Tool string clipping: strings > 4KB are clipped
@@ -528,7 +529,7 @@ test_antigravity_bounds_and_error_handling :: proc(t: ^testing.T) {
 	strings.write_string(&tb, huge_str)
 	strings.write_string(&tb, `"}}}`)
 	mapped_tool, err5 := antigravity_map_hook(strings.to_string(tb), TS)
-	testing.expect_value(t, err5, Antigravity_Error.None)
+	testing.expect_value(t, err5, Hook_Error.None)
 	testing.expect_value(t, len(mapped_tool.events), 1)
 	if len(mapped_tool.events) == 1 {
 		v, _ := json.parse_string(mapped_tool.events[0], json.DEFAULT_SPECIFICATION, true)
@@ -561,7 +562,7 @@ test_antigravity_pre_tool_use_step_idx_generates_tool_use_id :: proc(t: ^testing
 
 	raw := `{"hookEventName":"PreToolUse","conversationId":"s1","stepIdx":7,"toolCall":{"name":"run_command","args":{"CommandLine":"ls -la"}}}`
 	mapped, err := antigravity_map_hook(raw, TS)
-	testing.expect_value(t, err, Antigravity_Error.None)
+	testing.expect_value(t, err, Hook_Error.None)
 	testing.expect_value(t, len(mapped.events), 1)
 	if len(mapped.events) != 1 do return
 
@@ -574,7 +575,7 @@ test_antigravity_pre_tool_use_step_idx_generates_tool_use_id :: proc(t: ^testing
 	// Test step_idx = 0
 	raw0 := `{"hookEventName":"PreToolUse","conversationId":"s1","stepIdx":0,"toolCall":{"name":"view_file"}}`
 	mapped0, err0 := antigravity_map_hook(raw0, TS)
-	testing.expect_value(t, err0, Antigravity_Error.None)
+	testing.expect_value(t, err0, Hook_Error.None)
 	if len(mapped0.events) == 1 {
 		ev0, _ := contracts.ext_parse_event(mapped0.events[0])
 		testing.expect_value(t, ev0.tool_use_id, "step_0")
@@ -588,7 +589,7 @@ test_antigravity_invoke_subagent_emits_subagent_start :: proc(t: ^testing.T) {
 
 	raw := `{"hookEventName":"PreToolUse","conversationId":"s1","stepIdx":3,"toolCall":{"name":"invoke_subagent","args":{"Subagents":[{"Role":"Codebase Researcher","TypeName":"research","Model":"flash","Prompt":"Search code"}]}}}`
 	mapped, err := antigravity_map_hook(raw, TS)
-	testing.expect_value(t, err, Antigravity_Error.None)
+	testing.expect_value(t, err, Hook_Error.None)
 	testing.expect_value(t, len(mapped.events), 2)
 	if len(mapped.events) != 2 do return
 
@@ -614,7 +615,7 @@ test_antigravity_invoke_subagent_emits_subagent_start :: proc(t: ^testing.T) {
 	// Multiple subagents in one call
 	raw_multi := `{"hookEventName":"PreToolUse","conversationId":"s1","stepIdx":4,"toolCall":{"name":"invoke_subagent","args":{"subagents":[{"role":"Worker A","type":"worker","model":"pro"},{"role":"Worker B","type":"tester","model":"flash_lite"}]}}}`
 	mapped_m, err_m := antigravity_map_hook(raw_multi, TS)
-	testing.expect_value(t, err_m, Antigravity_Error.None)
+	testing.expect_value(t, err_m, Hook_Error.None)
 	testing.expect_value(t, len(mapped_m.events), 3) // tool.start + 2 subagent.start
 	if len(mapped_m.events) == 3 {
 		ev_sub1, _ := contracts.ext_parse_event(mapped_m.events[1])
@@ -643,7 +644,7 @@ test_antigravity_write_to_file_generates_file_edit_diff :: proc(t: ^testing.T) {
 
 	raw := `{"hookEventName":"PostToolUse","conversationId":"s1","stepIdx":5,"cwd":"/home/tanmay/heimdall-agent-manager","toolCall":{"name":"write_to_file","args":{"TargetFile":"/home/tanmay/heimdall-agent-manager/src/hello.odin","CodeContent":"package main\n\nmain :: proc() {}\n"}},"toolResult":{"output":"Created file"}}`
 	mapped, err := antigravity_map_hook(raw, TS)
-	testing.expect_value(t, err, Antigravity_Error.None)
+	testing.expect_value(t, err, Hook_Error.None)
 	testing.expect_value(t, len(mapped.events), 2)
 	if len(mapped.events) != 2 do return
 
@@ -696,7 +697,7 @@ test_antigravity_replace_file_content_generates_file_edit_diff :: proc(t: ^testi
 
 	raw := `{"hookEventName":"PostToolUse","conversationId":"s1","stepIdx":8,"cwd":"/home/tanmay/heimdall-agent-manager","toolCall":{"name":"replace_file_content","args":{"TargetFile":"/home/tanmay/heimdall-agent-manager/src/foo.odin","TargetContent":"var count = 0\n","ReplacementContent":"var count = 100\n","StartLine":12,"EndLine":12}},"toolResult":{"output":"Replaced"}}`
 	mapped, err := antigravity_map_hook(raw, TS)
-	testing.expect_value(t, err, Antigravity_Error.None)
+	testing.expect_value(t, err, Hook_Error.None)
 	testing.expect_value(t, len(mapped.events), 2)
 	if len(mapped.events) != 2 do return
 
@@ -733,7 +734,7 @@ test_antigravity_diff_truncation_capped_at_64kb :: proc(t: ^testing.T) {
 	strings.write_string(&tb, `"}}}`)
 
 	mapped, err := antigravity_map_hook(strings.to_string(tb), TS)
-	testing.expect_value(t, err, Antigravity_Error.None)
+	testing.expect_value(t, err, Hook_Error.None)
 	testing.expect_value(t, len(mapped.events), 2)
 	if len(mapped.events) != 2 do return
 
@@ -753,7 +754,7 @@ test_antigravity_diff_binary_handling :: proc(t: ^testing.T) {
 	// Binary file with NUL byte
 	raw := "{\"hookEventName\":\"PostToolUse\",\"conversationId\":\"s1\",\"stepIdx\":10,\"toolCall\":{\"name\":\"write_to_file\",\"args\":{\"TargetFile\":\"/tmp/bin\",\"CodeContent\":\"hello\\u0000world\"}}}"
 	mapped, err := antigravity_map_hook(raw, TS)
-	testing.expect_value(t, err, Antigravity_Error.None)
+	testing.expect_value(t, err, Hook_Error.None)
 	testing.expect_value(t, len(mapped.events), 2)
 	if len(mapped.events) == 2 {
 		v, _ := json.parse_string(mapped.events[1], json.DEFAULT_SPECIFICATION, true)
@@ -770,7 +771,7 @@ test_antigravity_failed_file_edit_omits_file_edit_event :: proc(t: ^testing.T) {
 
 	raw := `{"hookEventName":"PostToolUse","conversationId":"s1","stepIdx":11,"toolCall":{"name":"write_to_file","args":{"TargetFile":"/root/forbidden.txt","CodeContent":"secrets"}},"error":"Permission denied"}`
 	mapped, err := antigravity_map_hook(raw, TS)
-	testing.expect_value(t, err, Antigravity_Error.None)
+	testing.expect_value(t, err, Hook_Error.None)
 	testing.expect_value(t, len(mapped.events), 1) // Only tool.end, no file.edit!
 	if len(mapped.events) == 1 {
 		ev, _ := contracts.ext_parse_event(mapped.events[0])
@@ -788,8 +789,8 @@ test_antigravity_post_invocation_maps_no_events_and_silent_stdout :: proc(t: ^te
 
 	raw := #load("testdata/antigravity/post_invocation.json", string)
 	mapped, err := antigravity_map_hook(raw, TS)
-	testing.expect_value(t, err, Antigravity_Error.None)
-	testing.expect_value(t, mapped.hook, Antigravity_Hook.Post_Invocation)
+	testing.expect_value(t, err, Hook_Error.None)
+	testing.expect_value(t, antigravity_hook_from_name("PostInvocation"), Antigravity_Hook.Post_Invocation)
 	testing.expect_value(t, mapped.is_permission, false)
 	testing.expect_value(t, len(mapped.events), 0)
 
@@ -807,8 +808,7 @@ test_antigravity_fixture_pre_tool_use_subagent :: proc(t: ^testing.T) {
 
 	raw := #load("testdata/antigravity/pre_tool_use_subagent.json", string)
 	mapped, err := antigravity_map_hook(raw, TS)
-	testing.expect_value(t, err, Antigravity_Error.None)
-	testing.expect_value(t, mapped.hook, Antigravity_Hook.Pre_Tool_Use)
+	testing.expect_value(t, err, Hook_Error.None)
 	testing.expect_value(t, mapped.is_permission, false)
 	testing.expect_value(t, len(mapped.events), 2)
 	if len(mapped.events) != 2 do return
@@ -840,8 +840,7 @@ test_antigravity_fixture_post_tool_use_write_create :: proc(t: ^testing.T) {
 
 	raw := #load("testdata/antigravity/post_tool_use_write_create.json", string)
 	mapped, err := antigravity_map_hook(raw, TS)
-	testing.expect_value(t, err, Antigravity_Error.None)
-	testing.expect_value(t, mapped.hook, Antigravity_Hook.Post_Tool_Use)
+	testing.expect_value(t, err, Hook_Error.None)
 	testing.expect_value(t, len(mapped.events), 2)
 	if len(mapped.events) != 2 do return
 
@@ -877,8 +876,7 @@ test_antigravity_fixture_post_tool_use_replace_file :: proc(t: ^testing.T) {
 
 	raw := #load("testdata/antigravity/post_tool_use_replace_file.json", string)
 	mapped, err := antigravity_map_hook(raw, TS)
-	testing.expect_value(t, err, Antigravity_Error.None)
-	testing.expect_value(t, mapped.hook, Antigravity_Hook.Post_Tool_Use)
+	testing.expect_value(t, err, Hook_Error.None)
 	testing.expect_value(t, len(mapped.events), 2)
 	if len(mapped.events) != 2 do return
 
@@ -912,8 +910,7 @@ test_antigravity_fixture_post_tool_use_failure :: proc(t: ^testing.T) {
 
 	raw := #load("testdata/antigravity/post_tool_use_failure.json", string)
 	mapped, err := antigravity_map_hook(raw, TS)
-	testing.expect_value(t, err, Antigravity_Error.None)
-	testing.expect_value(t, mapped.hook, Antigravity_Hook.Post_Tool_Use)
+	testing.expect_value(t, err, Hook_Error.None)
 	testing.expect_value(t, len(mapped.events), 1)
 	if len(mapped.events) != 1 do return
 
@@ -935,7 +932,7 @@ test_antigravity_child_subagent_events_carry_agent_id_and_type :: proc(t: ^testi
 
 	raw := `{"hookEventName":"PreToolUse","conversationId":"s_parent","agentId":"agt_sub123","agentType":"research","stepIdx":2,"toolCall":{"name":"view_file","args":{"AbsolutePath":"/repo/doc.md"}}}`
 	mapped, err := antigravity_map_hook(raw, TS)
-	testing.expect_value(t, err, Antigravity_Error.None)
+	testing.expect_value(t, err, Hook_Error.None)
 	testing.expect_value(t, len(mapped.events), 1)
 	if len(mapped.events) == 1 {
 		ev, e := contracts.ext_parse_event(mapped.events[0])
@@ -969,7 +966,7 @@ test_antigravity_all_fixtures_satisfy_contract :: proc(t: ^testing.T) {
 
 	for raw, idx in fixtures {
 		mapped, err := antigravity_map_hook(raw, TS, 10_000, "blk_fixture_all")
-		testing.expect_value(t, err, Antigravity_Error.None)
+		testing.expect_value(t, err, Hook_Error.None)
 
 		for event_str in mapped.events {
 			total_events += 1
@@ -1013,7 +1010,7 @@ test_antigravity_tracking_allocator_clean :: proc(t: ^testing.T) {
 	delete(out_deny)
 
 	// Test response parsing with temp allocator cleanly
-	resp_out := antigravity_permission_output_from_response(`{"ok":true,"data":{"decision":"allow"}}`)
+	resp_out := antigravity_output_from_response(`{"ok":true,"data":{"decision":"allow"}}`)
 	testing.expect_value(t, resp_out, `{"decision":"allow"}`)
 
 	// Test destructive check

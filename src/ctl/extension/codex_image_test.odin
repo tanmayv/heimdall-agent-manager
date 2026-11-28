@@ -20,7 +20,7 @@ test_codex_native_image_callbacks_keep_identity_without_image_data :: proc(t: ^t
 		root := row.(json.Object)
 		raw, _ := json.marshal(root)
 		mapped, err := codex_map_hook(string(raw), TS)
-		testing.expect_value(t, err, Codex_Error.None)
+		testing.expect_value(t, err, Hook_Error.None)
 		testing.expect_value(t, len(mapped.events), 1)
 		if len(mapped.events) != 1 do continue
 		ev, parse_err := contracts.ext_parse_event(mapped.events[0])
@@ -67,7 +67,7 @@ test_codex_large_native_image_completion_is_bounded_and_payload_free :: proc(t: 
 	raw, _ := json.marshal(root)
 	testing.expect(t, len(raw) > 1024*1024)
 	mapped, err := codex_map_hook(string(raw), TS)
-	testing.expect_value(t, err, Codex_Error.None)
+	testing.expect_value(t, err, Hook_Error.None)
 	if err != .None || len(mapped.events) != 1 do return
 	ev, parse_err := contracts.ext_parse_event(mapped.events[0])
 	testing.expect_value(t, parse_err, contracts.Ext_Error.None)
@@ -85,7 +85,7 @@ test_codex_large_native_image_completion_is_bounded_and_payload_free :: proc(t: 
 	boundary, _ := json.marshal(root)
 	testing.expect_value(t, len(boundary), HOOK_INPUT_MAX)
 	metadata_free, at_cap := codex_map_hook(string(boundary), TS)
-	testing.expect_value(t, at_cap, Codex_Error.None)
+	testing.expect_value(t, at_cap, Hook_Error.None)
 	testing.expect_value(t, len(metadata_free.events), 1)
 	if len(metadata_free.events) == 1 {
 		identity, _ := contracts.ext_parse_event(metadata_free.events[0])
@@ -93,5 +93,5 @@ test_codex_large_native_image_completion_is_bounded_and_payload_free :: proc(t: 
 		testing.expect_value(t, identity.kind, contracts.Ext_Event_Kind.Tool_End)
 	}
 	_, over_cap := codex_map_hook(strings.concatenate({string(boundary), " "}), TS)
-	testing.expect_value(t, over_cap, Codex_Error.Too_Large)
+	testing.expect_value(t, over_cap, Hook_Error.Too_Large)
 }

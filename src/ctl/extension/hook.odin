@@ -20,6 +20,21 @@ package extension
 // deadline (bridge restart), reconnects with backoff (250ms → 2s) and
 // re-registers the SAME id with the remaining timeout until the deadline, so the
 // bridge's in-memory blocker list rebuilds itself.
+//
+// Shared rules (P26-P28): before this core each adapter re-implemented its own
+// copy of the hello capabilities serializer, event-name strings, the permission
+// relay timeout (claude/codex passed it raw, antigravity clamped it twice and
+// defaulted it in map_hook), the bridge decision parser, the event-size bounds
+// (codex and antigravity only) and the ham-ctl self-approval (claude and
+// antigravity only, so Codex never self-approved). They now live in one place:
+//   - hook_adapter_run            one delivery path (event / permission relay);
+//   - hook_permission_self_approved + is_ham_ctl_command  one self-approve rule;
+//   - permission_timeout_clamp    one relay timeout rule;
+//   - permission_decision_from_response  one bridge-reply parser;
+//   - ext_hello_event, ext_event_begin(contracts.Ext_Event_Kind),
+//     pb_permission_relay, hook_mapped_bounded  one event schema (event_json.odin).
+// An adapter (claude.odin, codex.odin, antigravity.odin) only maps provider
+// fields into Hook_Mapped and renders a decision in its provider's stdout format.
 
 import "core:fmt"
 import "core:encoding/json"
@@ -101,9 +116,10 @@ permission_reply_kind :: proc(response: string, ok: bool) -> Permission_Reply {
 }
 
 // relay_permission blocks on agent.extension.permission for one blocker_id,
-// re-registering it after transport failures until the deadline. build renders
-// the event for the remaining timeout.
-relay_permission :: proc(env: Hook_Env, send: Send_Proc, timeout_ms: int, build: proc(remaining_ms: int, blocker_id: string, raw: string, ts: string) -> (string, bool), raw: string, render: proc(response: string) -> string) -> string {
+// re-registering it after transport failures until the deadline. The adapter
+// re-maps the hook for the remaining timeout on every attempt. It returns the
+// bridge's decision and message, or decision "none" when no decision arrived.
+relay_permission :: proc(env: Hook_Env, send: Send_Proc, timeout_ms: int, adapter: Hook_Adapter, raw: string) -> (decision, message: string) {
 	now := env.now_ms if env.now_ms != nil else real_now_ms
 	sleep := env.sleep_ms if env.sleep_ms != nil else real_sleep_ms
 	blocker_id := env.blocker_id if env.blocker_id != "" else new_blocker_id()
@@ -111,52 +127,123 @@ relay_permission :: proc(env: Hook_Env, send: Send_Proc, timeout_ms: int, build:
 	backoff := PERMISSION_RETRY_BACKOFF_MIN_MS
 	for {
 		remaining := int(deadline - now())
-		if remaining < PERMISSION_RELAY_TIMEOUT_MIN_MS do return ""
-		event, ok := build(remaining, blocker_id, raw, env.ts)
-		if !ok do return ""
-		response, sent := send(env.endpoint, env.token, "agent.extension.permission", event, remaining + PERMISSION_SOCKET_MARGIN_MS)
-		if permission_reply_kind(response, sent) == .Final do return render(response)
-		if int(deadline - now()) < backoff + PERMISSION_RELAY_TIMEOUT_MIN_MS do return ""
+		if remaining < PERMISSION_RELAY_TIMEOUT_MIN_MS do return "none", ""
+		mapped, err := adapter.map_hook(raw, env.ts, remaining, blocker_id)
+		if err != .None || !mapped.is_permission || len(mapped.events) != 1 do return "none", ""
+		response, sent := send(env.endpoint, env.token, "agent.extension.permission", mapped.events[0], remaining + PERMISSION_SOCKET_MARGIN_MS)
+		if permission_reply_kind(response, sent) == .Final do return permission_decision_from_response(response)
+		if int(deadline - now()) < backoff + PERMISSION_RELAY_TIMEOUT_MIN_MS do return "none", ""
 		sleep(backoff)
 		backoff = min(backoff * 2, PERMISSION_RETRY_BACKOFF_MAX_MS)
 	}
-}
-
-@(private = "file")
-claude_build_permission :: proc(remaining_ms: int, blocker_id: string, raw: string, ts: string) -> (string, bool) {
-	mapped, err := claude_map_hook(raw, ts, remaining_ms, blocker_id)
-	if err != .None || len(mapped.events) == 0 || !mapped.is_permission do return "", false
-	return mapped.events[0], true
 }
 
 env_ready :: proc(env: Hook_Env) -> bool {
 	return strings.trim_space(env.endpoint) != "" && strings.trim_space(env.token) != ""
 }
 
+// permission_timeout_clamp is the one relay-timeout rule: unset (<= 0) means
+// PERMISSION_RELAY_TIMEOUT_MS, anything else is clamped to
+// [PERMISSION_RELAY_TIMEOUT_MIN_MS, PERMISSION_RELAY_TIMEOUT_MS] so every
+// provider's permission hook budget (330s in the hooks.json files) covers it.
+permission_timeout_clamp :: proc(ms: int) -> int {
+	if ms <= 0 do return PERMISSION_RELAY_TIMEOUT_MS
+	return clamp(ms, PERMISSION_RELAY_TIMEOUT_MIN_MS, PERMISSION_RELAY_TIMEOUT_MS)
+}
+
 // permission_timeout_from_env reads PERMISSION_TIMEOUT_ENV, clamped.
 permission_timeout_from_env :: proc() -> int {
 	raw := os.get_env(PERMISSION_TIMEOUT_ENV, context.temp_allocator)
 	v, ok := strconv.parse_int(strings.trim_space(raw))
-	if !ok || v <= 0 do return PERMISSION_RELAY_TIMEOUT_MS
-	return clamp(v, PERMISSION_RELAY_TIMEOUT_MIN_MS, PERMISSION_RELAY_TIMEOUT_MS)
+	if !ok do return PERMISSION_RELAY_TIMEOUT_MS
+	return permission_timeout_clamp(v)
 }
 
-// Hook_Adapter is one Heimdall extension mechanism's hook mapping and usage
-// source. HOOK_ADAPTERS is keyed by the provider registry's extension kind, so
-// a provider reaches an adapter only through its descriptor (G7, G9). This is
-// the minimal table; the full adapter interface is a later refactor (R6).
+// permission_decision_from_response reads an agent.extension.permission bridge
+// response ({ok, data:{decision, message}}, tolerating one extra data envelope).
+// Errors, unreachable bridges and unparseable replies yield decision "none".
+// The strings live in context.temp_allocator: render them before freeing it.
+permission_decision_from_response :: proc(response: string) -> (decision, message: string) {
+	value, err := json.parse_string(strings.trim_space(response), json.DEFAULT_SPECIFICATION, true, context.temp_allocator)
+	if err != .None do return "none", ""
+	root, ok := value.(json.Object)
+	if !ok || !json_get_bool(root, "ok") do return "none", ""
+	data := json_get_object(root, "data")
+	if inner := json_get_object(data, "data"); inner != nil && !json_has(data, "decision") do data = inner
+	decision = json_get_string(data, "decision")
+	if decision == "" do decision = "none"
+	return decision, json_get_string(data, "message")
+}
+
+PERMISSION_DENY_DEFAULT_MESSAGE :: "Denied in Ninjy"
+PERMISSION_MESSAGE_MAX :: 2 * 1024
+
+// permission_request_output renders the PermissionRequest hookSpecificOutput
+// decision that Claude Code defined and Codex adopted. "none" (or anything
+// else) yields "" — print nothing so the native prompt stays.
+permission_request_output :: proc(decision, message: string) -> string {
+	switch decision {
+	case "allow":
+		return `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}`
+	case "deny":
+		b := strings.builder_make()
+		msg := message if strings.trim_space(message) != "" else PERMISSION_DENY_DEFAULT_MESSAGE
+		strings.write_string(&b, `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":`)
+		json_write_string(&b, clip_string(msg, PERMISSION_MESSAGE_MAX))
+		strings.write_string(&b, `}}}`)
+		return strings.to_string(b)
+	}
+	return ""
+}
+
+// Hook_Error is why a native hook payload produced no events.
+Hook_Error :: enum {
+	None,
+	Too_Large,
+	Malformed_Json,
+}
+
+// Hook_Mapped is one native hook invocation mapped to ham.ext.v1. events are
+// complete event documents in send order. A permission request maps to exactly
+// one permission.request event, which goes to agent.extension.permission;
+// everything else goes to agent.extension.event (event_params).
+Hook_Mapped :: struct {
+	events:        [dynamic]string,
+	is_permission: bool,
+	// Set by the adapter when the permission request is for the provider's
+	// shell tool: the command line and its working directory, which the shared
+	// self-approve rule (hook_permission_self_approved) inspects.
+	shell_command: string,
+	shell_cwd:     string,
+}
+
+// Map_Hook_Proc maps one native hook payload. ts is the RFC 3339 event time;
+// permission_timeout_ms > 0 and a non-empty permission_blocker_id become the
+// permission.request relay fields (pb_permission_relay).
+Map_Hook_Proc :: proc(raw, ts: string, permission_timeout_ms: int, permission_blocker_id: string) -> (Hook_Mapped, Hook_Error)
+
+// Render_Decision_Proc renders a permission decision ("allow", "deny",
+// "none", ...) as the provider's hook stdout; "" prints nothing.
+Render_Decision_Proc :: proc(decision, message: string) -> string
+
+// Hook_Adapter is one Heimdall extension mechanism. Adapters only map provider
+// fields; the delivery rules (self-approval of ham-ctl, the relay timeout clamp,
+// blocker re-registration, event bounds and the hello schema) are shared and
+// live here and in event_json.odin. HOOK_ADAPTERS is keyed by the provider
+// registry's extension kind, so a provider reaches an adapter only through its
+// descriptor (G7, G9).
 Hook_Adapter :: struct {
-	// Maps one native hook payload and delivers it; returns stdout ("" = none).
-	run:   proc(raw: string, env: Hook_Env, send: Send_Proc) -> string,
-	usage: Usage_Reader, // nil: the provider reports no context usage
+	map_hook:        Map_Hook_Proc,
+	render_decision: Render_Decision_Proc,
+	usage:           Usage_Reader, // nil: the provider reports no context usage
 }
 
 @(private = "file")
 HOOK_ADAPTERS := [contracts.Provider_Extension_Kind]Hook_Adapter{
 	.None               = {},
-	.Claude_Plugin      = {run = claude_hook_run, usage = claude_usage_reader},
-	.Codex_Plugin       = {run = codex_hook_run, usage = codex_usage_reader},
-	.Antigravity_Plugin = {run = antigravity_hook_run},
+	.Claude_Plugin      = {map_hook = claude_map_hook, render_decision = permission_request_output, usage = claude_usage_reader},
+	.Codex_Plugin       = {map_hook = codex_map_hook, render_decision = permission_request_output, usage = codex_usage_reader},
+	.Antigravity_Plugin = {map_hook = antigravity_map_hook, render_decision = antigravity_permission_output},
 }
 
 // hook_adapter_for resolves a provider id (or alias) to its extension adapter;
@@ -165,7 +252,7 @@ hook_adapter_for :: proc(provider: string) -> (Hook_Adapter, bool) {
 	d, ok := contracts.provider_descriptor(provider)
 	if !ok || d.extension == .None do return {}, false
 	adapter := HOOK_ADAPTERS[d.extension]
-	return adapter, adapter.run != nil
+	return adapter, adapter.map_hook != nil
 }
 
 // hook_provider_supported reports whether `ham-ctl extension hook <provider>`
@@ -182,53 +269,37 @@ hook_run :: proc(provider, raw: string, env: Hook_Env, send: Send_Proc) -> strin
 	if !env_ready(env) do return ""
 	adapter, ok := hook_adapter_for(provider)
 	if !ok do return ""
-	return adapter.run(raw, env, send)
+	return hook_adapter_run(adapter, raw, env, send)
 }
 
-@(private = "file")
-codex_hook_run :: proc(raw: string, env: Hook_Env, send: Send_Proc) -> string {
-	timeout := env.permission_timeout_ms
-	if timeout <= 0 do timeout = PERMISSION_RELAY_TIMEOUT_MS
-	mapped, err := codex_map_hook(raw, env.ts, timeout)
+// hook_adapter_run is the one delivery path for every adapter.
+hook_adapter_run :: proc(adapter: Hook_Adapter, raw: string, env: Hook_Env, send: Send_Proc) -> string {
+	timeout := permission_timeout_clamp(env.permission_timeout_ms)
+	mapped, err := adapter.map_hook(raw, env.ts, timeout, "")
 	if err != .None || len(mapped.events) == 0 do return ""
-	if mapped.is_permission {
-		return relay_permission(env, send, timeout, codex_build_permission, raw, codex_permission_output_from_response)
+	if !mapped.is_permission {
+		_, _ = send(env.endpoint, env.token, "agent.extension.event", event_params(mapped.events[:]), EVENT_SOCKET_TIMEOUT_MS)
+		return ""
 	}
-	_, _ = send(env.endpoint, env.token, "agent.extension.event", event_params(mapped.events[:]), EVENT_SOCKET_TIMEOUT_MS)
-	return ""
+	// A lone allowlisted ham-ctl invocation is the agent talking to Heimdall
+	// itself: approve it locally, with no blocker and no event.
+	if hook_permission_self_approved(mapped, env.ctl_bin) do return adapter.render_decision("allow", "")
+	decision, message := relay_permission(env, send, timeout, adapter, raw)
+	return adapter.render_decision(decision, message)
 }
 
-@(private = "file")
-claude_hook_run :: proc(raw: string, env: Hook_Env, send: Send_Proc) -> string {
-	timeout := env.permission_timeout_ms
-	if timeout <= 0 do timeout = PERMISSION_RELAY_TIMEOUT_MS
-	mapped, err := claude_map_hook(raw, env.ts, timeout)
-	if err != .None || len(mapped.events) == 0 do return ""
-	if mapped.is_permission {
-		// A lone ham-ctl invocation is the agent talking to Heimdall itself:
-		// approve it locally, with no blocker and no event.
-		if claude_permission_is_ham_ctl(raw, env.ctl_bin) do return claude_permission_output("allow", "")
-		return relay_permission(env, send, timeout, claude_build_permission, raw, claude_permission_output_from_response)
-	}
-	_, _ = send(env.endpoint, env.token, "agent.extension.event", event_params(mapped.events[:]), EVENT_SOCKET_TIMEOUT_MS)
-	return ""
+// hook_permission_self_approved is the one self-approve rule: the request is
+// for the provider's shell tool and its command is one allowlisted ham-ctl
+// invocation (is_ham_ctl_command).
+hook_permission_self_approved :: proc(mapped: Hook_Mapped, ctl_bin: string) -> bool {
+	return mapped.is_permission && mapped.shell_command != "" && is_ham_ctl_command(mapped.shell_command, ctl_bin, mapped.shell_cwd)
 }
 
-@(private = "file")
-antigravity_hook_run :: proc(raw: string, env: Hook_Env, send: Send_Proc) -> string {
-	timeout := env.permission_timeout_ms
-	if timeout <= 0 do timeout = PERMISSION_RELAY_TIMEOUT_MS
-	else do timeout = min(timeout, PERMISSION_RELAY_TIMEOUT_MS)
-	mapped, err := antigravity_map_hook(raw, env.ts, timeout)
-	if err != .None || len(mapped.events) == 0 do return ""
-	if mapped.is_permission {
-		if antigravity_permission_is_ham_ctl(raw, env.ctl_bin) do return antigravity_permission_output("allow", "")
-		out := relay_permission(env, send, timeout, antigravity_build_permission, raw, antigravity_permission_output_from_response)
-		if out == "" do return `{"decision":"ask"}`
-		return out
-	}
-	_, _ = send(env.endpoint, env.token, "agent.extension.event", event_params(mapped.events[:]), EVENT_SOCKET_TIMEOUT_MS)
-	return ""
+// hook_mapped_bounded drops a mapping whose events would exceed the bridge's
+// limits (ext_events_within_bounds); map_hook procs end with it.
+hook_mapped_bounded :: proc(out: Hook_Mapped) -> (Hook_Mapped, Hook_Error) {
+	if !ext_events_within_bounds(out.events[:]) do return {}, .Too_Large
+	return out, .None
 }
 
 // is_ham_ctl_command reports whether a shell command is exactly one ham-ctl

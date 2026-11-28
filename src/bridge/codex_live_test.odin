@@ -38,7 +38,7 @@ test_codex_native_fixture_replay_isolated_by_issued_instance :: proc(t: ^testing
 		root["agent_instance_id"] = json.String(other)
 		raw, _ := json.marshal(root)
 		mapped, map_err := ext.codex_map_hook(string(raw), "2026-10-22T10:00:00Z", 1000)
-		testing.expect_value(t, map_err, ext.Codex_Error.None)
+		testing.expect_value(t, map_err, ext.Hook_Error.None)
 		if mapped.is_permission || len(mapped.events) == 0 do continue
 		res := bridge_ext_ingest(Bridge_Local_Agent_Token_Record{agent_instance_id=id, instance_token="fixture-one",role=.Agent}, ext.event_params(mapped.events[:]), bridge_runtime_now_ms())
 		testing.expect_value(t, res.accepted, len(mapped.events))

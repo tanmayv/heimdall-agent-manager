@@ -32,8 +32,7 @@ ANTIGRAVITY_TOOL_STRING_MAX :: 4 * 1024
 ANTIGRAVITY_MESSAGE_MAX :: 2 * 1024
 // No "usage": Antigravity reports metrics only, never usage.context_tokens, so its
 // hello omits the capability and the bridge reports usage_supported=false.
-ANTIGRAVITY_CAPABILITIES :: [?]string{"activity", "subagents", "permissions", "file_edits", "session_id"}
-ANTIGRAVITY_DENY_DEFAULT_MESSAGE :: "Denied in Ninjy"
+ANTIGRAVITY_CAPABILITIES :: contracts.Ext_Capabilities{.Activity, .Subagents, .Permissions, .File_Edits, .Session_Id}
 
 Antigravity_Hook :: enum {
 	Unknown,
@@ -43,18 +42,6 @@ Antigravity_Hook :: enum {
 	Post_Tool_Use,
 	Stop,
 	Permission_Request,
-}
-
-Antigravity_Error :: enum {
-	None,
-	Too_Large,
-	Malformed_Json,
-}
-
-Antigravity_Mapped :: struct {
-	hook:          Antigravity_Hook,
-	events:        [dynamic]string,
-	is_permission: bool,
 }
 
 antigravity_hook_from_name :: proc(name: string) -> Antigravity_Hook {
@@ -141,8 +128,9 @@ antigravity_extract_subagents :: proc(args_val: json.Value) -> []Antigravity_Sub
 	return out[:]
 }
 
-// antigravity_map_hook maps one Antigravity hook payload to ham.ext.v1 events.
-antigravity_map_hook :: proc(raw: string, ts: string, permission_timeout_ms := 0, permission_blocker_id := "") -> (out: Antigravity_Mapped, err: Antigravity_Error) {
+// antigravity_map_hook maps one Antigravity hook payload to ham.ext.v1 events
+// (a Map_Hook_Proc).
+antigravity_map_hook :: proc(raw, ts: string, permission_timeout_ms := 0, permission_blocker_id := "") -> (out: Hook_Mapped, err: Hook_Error) {
 	if len(raw) > ANTIGRAVITY_HOOK_INPUT_MAX do return out, .Too_Large
 	value, perr := json.parse_string(raw, json.DEFAULT_SPECIFICATION, true)
 	if perr != .None do return out, .Malformed_Json
@@ -194,7 +182,7 @@ antigravity_map_hook :: proc(raw: string, ts: string, permission_timeout_ms := 0
 	// Extract hook name
 	hook_name := json_get_string(root, "hookEventName")
 	if hook_name == "" do hook_name = json_get_string(root, "hook_event_name")
-	out.hook = antigravity_hook_from_name(hook_name)
+	hook := antigravity_hook_from_name(hook_name)
 
 	// Extract tool details if present
 	tool_name := ""
@@ -204,6 +192,7 @@ antigravity_map_hook :: proc(raw: string, ts: string, permission_timeout_ms := 0
 	if tool_call != nil {
 		tool_name = json_get_string(tool_call, "name")
 		tool_args = tool_call["args"]
+		if tool_args == nil do tool_args = tool_call["input"]
 	}
 	if tool_name == "" do tool_name = json_get_string(root, "tool_name")
 	if tool_name == "" do tool_name = json_get_string(root, "toolName")
@@ -220,25 +209,14 @@ antigravity_map_hook :: proc(raw: string, ts: string, permission_timeout_ms := 0
 	if tool_name != "" do root["tool_name"] = json.String(tool_name)
 	if tool_use_id != "" do root["tool_use_id"] = json.String(tool_use_id)
 
-	switch out.hook {
+	switch hook {
 	case .Unknown:
 		// Unknown hook maps to no events
 
 	case .Pre_Invocation:
 		if inv_num <= 1 {
 			// First invocation: emit hello and session (phase: start)
-			caps := ANTIGRAVITY_CAPABILITIES
-			h := pb_make()
-			pb_key(&h, "capabilities")
-			strings.write_byte(&h.b, '[')
-			for c, i in caps {
-				if i > 0 do strings.write_byte(&h.b, ',')
-				json_write_string(&h.b, c)
-			}
-			strings.write_byte(&h.b, ']')
-			pb_str_nonempty(&h, "source", json_get_string(root, "source"))
-			eb := ext_event_begin("hello", ts, root, ANTIGRAVITY_PROVIDER, ANTIGRAVITY_EXT_VERSION)
-			append(&out.events, ext_event_end(&eb, pb_done(&h)))
+			append(&out.events, ext_hello_event(ts, root, ANTIGRAVITY_PROVIDER, ANTIGRAVITY_EXT_VERSION, ANTIGRAVITY_CAPABILITIES))
 
 			s := pb_make()
 			pb_str(&s, "phase", "start")
@@ -246,7 +224,7 @@ antigravity_map_hook :: proc(raw: string, ts: string, permission_timeout_ms := 0
 			pb_str_nonempty(&s, "cwd", cwd)
 			pb_str_nonempty(&s, "model", model)
 			pb_str_nonempty(&s, "transcript_path", transcript_path)
-			eb2 := ext_event_begin("session", ts, root, ANTIGRAVITY_PROVIDER, ANTIGRAVITY_EXT_VERSION)
+			eb2 := ext_event_begin(.Session, ts, root, ANTIGRAVITY_PROVIDER, ANTIGRAVITY_EXT_VERSION)
 			append(&out.events, ext_event_end(&eb2, pb_done(&s)))
 		}
 
@@ -256,7 +234,7 @@ antigravity_map_hook :: proc(raw: string, ts: string, permission_timeout_ms := 0
 		pb_str(&a, "reason", "user_prompt")
 		if inv_num > 0 do pb_int(&a, "invocation_num", inv_num)
 		if step_idx > 0 do pb_int(&a, "step_idx", step_idx)
-		eb3 := ext_event_begin("activity", ts, root, ANTIGRAVITY_PROVIDER, ANTIGRAVITY_EXT_VERSION)
+		eb3 := ext_event_begin(.Activity, ts, root, ANTIGRAVITY_PROVIDER, ANTIGRAVITY_EXT_VERSION)
 		append(&out.events, ext_event_end(&eb3, pb_done(&a)))
 
 	case .Post_Invocation:
@@ -272,14 +250,8 @@ antigravity_map_hook :: proc(raw: string, ts: string, permission_timeout_ms := 0
 			if input == nil do input = json.Object{}
 			p := pb_make()
 			pb_str(&p, "permission_mode", "ask")
-			timeout := permission_timeout_ms
-			if timeout <= 0 do timeout = PERMISSION_RELAY_TIMEOUT_MS
-			else do timeout = min(timeout, PERMISSION_RELAY_TIMEOUT_MS)
-			pb_int(&p, "timeout_ms", timeout)
-			blocker_id := permission_blocker_id
-			if blocker_id == "" do blocker_id = new_blocker_id()
-			pb_str(&p, "blocker_id", blocker_id)
-			eb := ext_event_begin("permission.request", ts, root, ANTIGRAVITY_PROVIDER, ANTIGRAVITY_EXT_VERSION)
+			pb_permission_relay(&p, permission_timeout_ms, permission_blocker_id)
+			eb := ext_event_begin(.Permission_Request, ts, root, ANTIGRAVITY_PROVIDER, ANTIGRAVITY_EXT_VERSION)
 			ext_event_tool(&eb, root, input, nil)
 			append(&out.events, ext_event_end(&eb, pb_done(&p)))
 		} else {
@@ -287,11 +259,11 @@ antigravity_map_hook :: proc(raw: string, ts: string, permission_timeout_ms := 0
 			p := pb_make()
 			pb_str_nonempty(&p, "permission_mode", perm_mode)
 			if step_idx > 0 do pb_int(&p, "step_idx", step_idx)
-			eb := ext_event_begin("tool.start", ts, root, ANTIGRAVITY_PROVIDER, ANTIGRAVITY_EXT_VERSION)
+			eb := ext_event_begin(.Tool_Start, ts, root, ANTIGRAVITY_PROVIDER, ANTIGRAVITY_EXT_VERSION)
 			ext_event_tool(&eb, root, input, nil)
 			append(&out.events, ext_event_end(&eb, pb_done(&p)))
 
-			if tool_name == "invoke_subagent" || tool_name == "invokeSubagent" || tool_name == "InvokeSubagent" {
+			if antigravity_tool_is(tool_name, "invoke_subagent") {
 				subagents := antigravity_extract_subagents(tool_args)
 				for sub in subagents {
 					sub_p := pb_make()
@@ -302,7 +274,7 @@ antigravity_map_hook :: proc(raw: string, ts: string, permission_timeout_ms := 0
 					pb_str_nonempty(&sub_p, "model", sub.model)
 					pb_str_nonempty(&sub_p, "target_model", sub.model)
 					pb_str_nonempty(&sub_p, "description", sub.role)
-					sub_eb := ext_event_begin("subagent.start", ts, root, ANTIGRAVITY_PROVIDER, ANTIGRAVITY_EXT_VERSION)
+					sub_eb := ext_event_begin(.Subagent_Start, ts, root, ANTIGRAVITY_PROVIDER, ANTIGRAVITY_EXT_VERSION)
 					append(&out.events, ext_event_end(&sub_eb, pb_done(&sub_p)))
 				}
 			}
@@ -317,14 +289,8 @@ antigravity_map_hook :: proc(raw: string, ts: string, permission_timeout_ms := 0
 		if perm_mode == "" do perm_mode = json_get_string(root, "permission_mode")
 		if perm_mode == "" do perm_mode = "ask"
 		pb_str(&p, "permission_mode", perm_mode)
-		timeout := permission_timeout_ms
-		if timeout <= 0 do timeout = PERMISSION_RELAY_TIMEOUT_MS
-		else do timeout = min(timeout, PERMISSION_RELAY_TIMEOUT_MS)
-		pb_int(&p, "timeout_ms", timeout)
-		blocker_id := permission_blocker_id
-		if blocker_id == "" do blocker_id = new_blocker_id()
-		pb_str(&p, "blocker_id", blocker_id)
-		eb := ext_event_begin("permission.request", ts, root, ANTIGRAVITY_PROVIDER, ANTIGRAVITY_EXT_VERSION)
+		pb_permission_relay(&p, permission_timeout_ms, permission_blocker_id)
+		eb := ext_event_begin(.Permission_Request, ts, root, ANTIGRAVITY_PROVIDER, ANTIGRAVITY_EXT_VERSION)
 		ext_event_tool(&eb, root, input, nil)
 		append(&out.events, ext_event_end(&eb, pb_done(&p)))
 
@@ -366,7 +332,7 @@ antigravity_map_hook :: proc(raw: string, ts: string, permission_timeout_ms := 0
 		}
 		if d, ok := json_get_int(root, "durationMs"); ok do pb_int(&p, "duration_ms", d)
 		else if d, ok := json_get_int(root, "duration_ms"); ok do pb_int(&p, "duration_ms", d)
-		eb := ext_event_begin("tool.end", ts, root, ANTIGRAVITY_PROVIDER, ANTIGRAVITY_EXT_VERSION)
+		eb := ext_event_begin(.Tool_End, ts, root, ANTIGRAVITY_PROVIDER, ANTIGRAVITY_EXT_VERSION)
 		ext_event_tool(&eb, root, input, response)
 		ext_event_metrics(&eb, metrics)
 		append(&out.events, ext_event_end(&eb, pb_done(&p)))
@@ -387,7 +353,7 @@ antigravity_map_hook :: proc(raw: string, ts: string, permission_timeout_ms := 0
 			// A child agent's loop ended: its unfinished calls cannot complete.
 			p := pb_make()
 			pb_str(&p, "reason", term_reason)
-			eb := ext_event_begin("subagent.stop", ts, root, ANTIGRAVITY_PROVIDER, ANTIGRAVITY_EXT_VERSION)
+			eb := ext_event_begin(.Subagent_Stop, ts, root, ANTIGRAVITY_PROVIDER, ANTIGRAVITY_EXT_VERSION)
 			append(&out.events, ext_event_end(&eb, pb_done(&p)))
 		} else {
 			// Main turn ended; the session stays open for the next PreInvocation.
@@ -395,98 +361,66 @@ antigravity_map_hook :: proc(raw: string, ts: string, permission_timeout_ms := 0
 			pb_str(&a, "state", "idle")
 			pb_str(&a, "reason", term_reason)
 			if fully_idle, ok := root["fullyIdle"].(json.Boolean); ok do pb_bool(&a, "fully_idle", bool(fully_idle))
-			eb := ext_event_begin("activity", ts, root, ANTIGRAVITY_PROVIDER, ANTIGRAVITY_EXT_VERSION)
+			eb := ext_event_begin(.Activity, ts, root, ANTIGRAVITY_PROVIDER, ANTIGRAVITY_EXT_VERSION)
 			ext_event_finish_usage(&eb, ANTIGRAVITY_PROVIDER, root, true) // no reader: no usage
 			append(&out.events, ext_event_end(&eb, pb_done(&a)))
 		}
 	}
 
-	// Bound aggregate-shaped inputs, not just individual strings.
-	total := 0
-	for ev in out.events {
-		total += len(ev)
-		if len(ev) > contracts.EXT_EVENT_MAX_BYTES || total > contracts.EXT_BATCH_MAX_BYTES - 1024 {
-			return Antigravity_Mapped{}, .Too_Large
-		}
+	if out.is_permission && antigravity_tool_is(tool_name, "run_command") {
+		out.shell_command, out.shell_cwd = antigravity_shell_command(root, tool_args, cwd)
 	}
-	return out, .None
+	// Bound aggregate-shaped inputs, not just individual strings.
+	return hook_mapped_bounded(out)
 }
 
-antigravity_build_permission :: proc(remaining_ms: int, blocker_id: string, raw: string, ts: string) -> (string, bool) {
-	mapped, err := antigravity_map_hook(raw, ts, remaining_ms, blocker_id)
-	if err != .None || !mapped.is_permission || len(mapped.events) == 0 do return "", false
-	return mapped.events[0], true
+// antigravity_tool_canonical folds agy's camelCase / PascalCase tool name
+// spellings (runCommand, InvokeSubagent) to the snake_case name.
+antigravity_tool_canonical :: proc(name: string) -> string {
+	b := strings.builder_make(context.temp_allocator)
+	for i in 0..<len(name) {
+		c := name[i]
+		if c >= 'A' && c <= 'Z' {
+			if i > 0 && name[i-1] != '_' do strings.write_byte(&b, '_')
+			c += 'a' - 'A'
+		}
+		strings.write_byte(&b, c)
+	}
+	return strings.to_string(b)
 }
 
+antigravity_tool_is :: proc(tool_name, canonical: string) -> bool {
+	return antigravity_tool_canonical(tool_name) == canonical
+}
+
+// antigravity_shell_command reads run_command's command line and working
+// directory (args.Cwd, else the workspace cwd) for the shared self-approve rule.
+@(private = "file")
+antigravity_shell_command :: proc(root: json.Object, tool_args: json.Value, cwd: string) -> (command, command_cwd: string) {
+	args, _ := tool_args.(json.Object)
+	command = json_get_string(args, "CommandLine")
+	if command == "" do command = json_get_string(args, "command")
+	if command == "" do command = json_get_string(args, "command_line")
+	command_cwd = json_get_string(args, "Cwd")
+	if command_cwd == "" do command_cwd = json_get_string(args, "cwd")
+	if command_cwd == "" do command_cwd = cwd
+	return
+}
+
+// antigravity_permission_output renders agy's PreToolUse decision. Anything but
+// allow / deny (no decision, a timeout, an unreachable bridge) is "ask", which
+// hands the call back to agy's own terminal prompt.
 antigravity_permission_output :: proc(decision, reason: string) -> string {
 	switch decision {
 	case "allow":
 		return `{"decision":"allow"}`
 	case "deny":
 		b := strings.builder_make()
-		r := reason if strings.trim_space(reason) != "" else ANTIGRAVITY_DENY_DEFAULT_MESSAGE
+		r := reason if strings.trim_space(reason) != "" else PERMISSION_DENY_DEFAULT_MESSAGE
 		strings.write_string(&b, `{"decision":"deny","reason":`)
-		json_write_string(&b, clip_string(r, ANTIGRAVITY_MESSAGE_MAX))
+		json_write_string(&b, clip_string(r, PERMISSION_MESSAGE_MAX))
 		strings.write_byte(&b, '}')
 		return strings.to_string(b)
-	case "ask":
-		return `{"decision":"ask"}`
-	case:
-		return `{"decision":"ask"}`
 	}
-}
-
-antigravity_permission_output_from_response :: proc(response: string) -> string {
-	value, err := json.parse_string(strings.trim_space(response), json.DEFAULT_SPECIFICATION, true, context.temp_allocator)
-	if err != .None do return `{"decision":"ask"}`
-	root, ok := value.(json.Object)
-	if !ok || !json_get_bool(root, "ok") do return `{"decision":"ask"}`
-	data := json_get_object(root, "data")
-	if inner := json_get_object(data, "data"); inner != nil && !json_has(data, "decision") do data = inner
-	dec := json_get_string(data, "decision")
-	if dec == "" || dec == "none" do return `{"decision":"ask"}`
-	msg := json_get_string(data, "message")
-	return antigravity_permission_output(dec, msg)
-}
-
-antigravity_permission_is_ham_ctl :: proc(raw, ctl_bin: string) -> bool {
-	value, err := json.parse_string(raw, json.DEFAULT_SPECIFICATION, true, context.temp_allocator)
-	if err != .None do return false
-	root, ok := value.(json.Object)
-	if !ok do return false
-	tool_name := ""
-	tool_call := json_get_object(root, "toolCall")
-	if tool_call == nil do tool_call = json_get_object(root, "tool_call")
-	if tool_call != nil {
-		tool_name = json_get_string(tool_call, "name")
-	}
-	if tool_name == "" do tool_name = json_get_string(root, "tool_name")
-	if tool_name == "" do tool_name = json_get_string(root, "toolName")
-	if tool_name != "run_command" && tool_name != "runCommand" do return false
-
-	args: json.Object
-	if tool_call != nil {
-		args = json_get_object(tool_call, "args")
-		if args == nil do args = json_get_object(tool_call, "input")
-	}
-	if args == nil do args = json_get_object(root, "tool_input")
-	if args == nil do args = json_get_object(root, "toolInput")
-	if args == nil do args = json_get_object(root, "args")
-	if args == nil do return false
-
-	cmd := json_get_string(args, "CommandLine")
-	if cmd == "" do cmd = json_get_string(args, "command")
-	if cmd == "" do cmd = json_get_string(args, "command_line")
-
-	cwd := json_get_string(args, "Cwd")
-	if cwd == "" do cwd = json_get_string(args, "cwd")
-	if cwd == "" do cwd = json_get_string(root, "cwd")
-	if cwd == "" {
-		if ws := json_get_array(root, "workspacePaths"); len(ws) > 0 {
-			if s, is_s := ws[0].(json.String); is_s do cwd = string(s)
-		} else if ws2 := json_get_array(root, "workspace_paths"); len(ws2) > 0 {
-			if s, is_s := ws2[0].(json.String); is_s do cwd = string(s)
-		}
-	}
-	return is_ham_ctl_command(cmd, ctl_bin, cwd)
+	return `{"decision":"ask"}`
 }

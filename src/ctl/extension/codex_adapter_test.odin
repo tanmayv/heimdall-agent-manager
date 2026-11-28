@@ -28,7 +28,7 @@ test_codex_actual_release_callbacks_satisfy_contract :: proc(t: ^testing.T) {
 		root, _ := row.(json.Object)
 		b, _ := json.marshal(row)
 		mapped, err := codex_map_hook(string(b), TS, 10_000, "blk_fixture")
-		testing.expect_value(t, err, Codex_Error.None)
+		testing.expect_value(t, err, Hook_Error.None)
 		name := json_get_string(root, "hook_event_name")
 		if name == "PreCompact" || name == "PostCompact" {
 			testing.expect_value(t, len(mapped.events), 1)
@@ -84,16 +84,16 @@ test_codex_unknown_invalid_bounded_and_native_decisions :: proc(t: ^testing.T) {
 	defer free_all(context.temp_allocator)
 	for raw in ([]string{"[]", "{", `{"hook_event_name":"Stop"}`}) {
 		_, err := codex_map_hook(raw, TS)
-		testing.expect_value(t, err, Codex_Error.Malformed_Json)
+		testing.expect_value(t, err, Hook_Error.Malformed_Json)
 	}
 	_, err := codex_map_hook(strings.repeat("x", CODEX_HOOK_INPUT_MAX+1), TS)
-	testing.expect_value(t, err, Codex_Error.Too_Large)
+	testing.expect_value(t, err, Hook_Error.Too_Large)
 	unknown, _ := codex_map_hook(`{"session_id":"s","hook_event_name":"Notification"}`, TS)
 	testing.expect_value(t, len(unknown.events), 0)
-	testing.expect(t, strings.contains(codex_permission_output_from_response(`{"ok":true,"data":{"decision":"allow"}}`), `"behavior":"allow"`))
-	testing.expect(t, strings.contains(codex_permission_output_from_response(`{"ok":true,"data":{"data":{"decision":"deny","message":"no"}}}`), `"behavior":"deny"`))
+	testing.expect(t, strings.contains(permission_request_output_from_response(`{"ok":true,"data":{"decision":"allow"}}`), `"behavior":"allow"`))
+	testing.expect(t, strings.contains(permission_request_output_from_response(`{"ok":true,"data":{"data":{"decision":"deny","message":"no"}}}`), `"behavior":"deny"`))
 	for raw in ([]string{"", "{}", `{"ok":false,"data":{"decision":"allow"}}`, `{"ok":true,"data":{"decision":"none"}}`, `{"ok":true,"data":{"decision":"ask"}}`}) {
-		testing.expect_value(t, codex_permission_output_from_response(raw), "")
+		testing.expect_value(t, permission_request_output_from_response(raw), "")
 	}
 }
 
@@ -119,7 +119,7 @@ test_codex_confirmed_callback_markerless_update_and_mixed_native_summary :: proc
 	root["tool_response"] = json.String("Exit code: 0\nWall time: 0 seconds\nOutput:\nSuccess. Updated the following files:\nA a.txt\nM b.txt\nD gone.txt\n")
 	b, _ := json.marshal(root)
 	mapped, err := codex_map_hook(string(b), TS)
-	testing.expect_value(t, err, Codex_Error.None)
+	testing.expect_value(t, err, Hook_Error.None)
 	edits := make(map[string]bool)
 	for raw in mapped.events {
 		event, e := contracts.ext_parse_event(raw)
@@ -171,7 +171,7 @@ test_codex_hello_declares_usage_capability :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	defer free_all(context.temp_allocator)
 	mapped, err := codex_map_hook(`{"session_id":"s1","hook_event_name":"SessionStart","source":"startup","cwd":"/w","model":"gpt-5"}`, TS)
-	testing.expect_value(t, err, Codex_Error.None)
+	testing.expect_value(t, err, Hook_Error.None)
 	testing.expect(t, len(mapped.events) > 0)
 	if len(mapped.events) == 0 do return
 	ev, perr := contracts.ext_parse_event(mapped.events[0])

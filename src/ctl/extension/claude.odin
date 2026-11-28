@@ -29,8 +29,7 @@ import contracts "odin_test:contracts"
 
 CLAUDE_PROVIDER :: "claude"
 CLAUDE_EXT_VERSION :: "0.1.0"
-// "usage" = this provider emits usage.context_tokens (ham.ext.v1).
-CLAUDE_CAPABILITIES :: [?]string{"activity", "subagents", "permissions", "file_edits", "session_id", "usage"}
+CLAUDE_CAPABILITIES :: contracts.Ext_Capabilities{.Activity, .Subagents, .Permissions, .File_Edits, .Session_Id, .Usage}
 
 // Strings inside tool input / response are clipped so one event stays well
 // under contracts.EXT_EVENT_MAX_BYTES (256KB) even with a 64KB diff.
@@ -73,64 +72,33 @@ claude_hook_from_name :: proc(name: string) -> Claude_Hook {
 	return .Unknown
 }
 
-// Claude_Mapped is the result of mapping one hook invocation. events are
-// complete ham.ext.v1 JSON documents in send order. For a PermissionRequest the
-// single event must go to agent.extension.permission; everything else goes to
-// agent.extension.event (claude_event_params).
-Claude_Mapped :: struct {
-	hook:          Claude_Hook,
-	events:        [dynamic]string,
-	is_permission: bool,
-}
-
-Claude_Error :: enum {
-	None,
-	Too_Large,
-	Malformed_Json,
-}
-
-// claude_map_hook maps one Claude hook payload. ts is the RFC 3339 event time
-// (injected so tests are deterministic). An unknown hook maps to no events.
-// permission_timeout_ms > 0 is sent as payload.timeout_ms on permission.request
-// so the relay always gives up before the plugin's hook timeout, and a non-empty
-// permission_blocker_id as payload.blocker_id (stable across re-registrations).
-claude_map_hook :: proc(raw: string, ts: string, permission_timeout_ms := 0, permission_blocker_id := "") -> (out: Claude_Mapped, err: Claude_Error) {
+// claude_map_hook maps one Claude hook payload (a Map_Hook_Proc). An unknown
+// hook maps to no events.
+claude_map_hook :: proc(raw, ts: string, permission_timeout_ms := 0, permission_blocker_id := "") -> (out: Hook_Mapped, err: Hook_Error) {
 	if len(raw) > CLAUDE_HOOK_INPUT_MAX do return out, .Too_Large
 	value, perr := json.parse_string(raw, json.DEFAULT_SPECIFICATION, true)
 	if perr != .None do return out, .Malformed_Json
 	root, is_obj := value.(json.Object)
 	if !is_obj do return out, .Malformed_Json
 
-	out.hook = claude_hook_from_name(json_get_string(root, "hook_event_name"))
-	switch out.hook {
+	switch claude_hook_from_name(json_get_string(root, "hook_event_name")) {
 	case .Unknown:
 	case .Session_Start:
-		caps := CLAUDE_CAPABILITIES
-		p := pb_make()
-		pb_key(&p, "capabilities")
-		strings.write_byte(&p.b, '[')
-		for c, i in caps {
-			if i > 0 do strings.write_byte(&p.b, ',')
-			json_write_string(&p.b, c)
-		}
-		strings.write_byte(&p.b, ']')
-		pb_str_nonempty(&p, "source", json_get_string(root, "source"))
-		eb := ext_event_begin("hello", ts, root, CLAUDE_PROVIDER, CLAUDE_EXT_VERSION)
-		append(&out.events, ext_event_end(&eb, pb_done(&p)))
+		append(&out.events, ext_hello_event(ts, root, CLAUDE_PROVIDER, CLAUDE_EXT_VERSION, CLAUDE_CAPABILITIES))
 
 		s := pb_make()
 		pb_str(&s, "phase", "start")
 		pb_str_nonempty(&s, "source", json_get_string(root, "source"))
 		pb_str_nonempty(&s, "cwd", json_get_string(root, "cwd"))
 		pb_str_nonempty(&s, "model", json_get_string(root, "model"))
-		eb2 := ext_event_begin("session", ts, root, CLAUDE_PROVIDER, CLAUDE_EXT_VERSION)
+		eb2 := ext_event_begin(.Session, ts, root, CLAUDE_PROVIDER, CLAUDE_EXT_VERSION)
 		append(&out.events, ext_event_end(&eb2, pb_done(&s)))
 
 	case .Session_End:
 		p := pb_make()
 		pb_str(&p, "phase", "end")
 		pb_str_nonempty(&p, "reason", json_get_string(root, "reason"))
-		eb := ext_event_begin("session", ts, root, CLAUDE_PROVIDER, CLAUDE_EXT_VERSION)
+		eb := ext_event_begin(.Session, ts, root, CLAUDE_PROVIDER, CLAUDE_EXT_VERSION)
 		append(&out.events, ext_event_end(&eb, pb_done(&p)))
 
 	case .User_Prompt_Submit:
@@ -138,7 +106,7 @@ claude_map_hook :: proc(raw: string, ts: string, permission_timeout_ms := 0, per
 		pb_str(&p, "state", "active")
 		pb_str(&p, "reason", "user_prompt")
 		pb_str_nonempty(&p, "prompt_id", json_get_string(root, "prompt_id"))
-		eb := ext_event_begin("activity", ts, root, CLAUDE_PROVIDER, CLAUDE_EXT_VERSION)
+		eb := ext_event_begin(.Activity, ts, root, CLAUDE_PROVIDER, CLAUDE_EXT_VERSION)
 		append(&out.events, ext_event_end(&eb, pb_done(&p)))
 
 	case .Stop:
@@ -152,7 +120,7 @@ claude_map_hook :: proc(raw: string, ts: string, permission_timeout_ms := 0, per
 			if obj, ok := t.(json.Object); ok && json_get_string(obj, "status") == "running" do running += 1
 		}
 		pb_int(&p, "background_running", running)
-		eb := ext_event_begin("activity", ts, root, CLAUDE_PROVIDER, CLAUDE_EXT_VERSION)
+		eb := ext_event_begin(.Activity, ts, root, CLAUDE_PROVIDER, CLAUDE_EXT_VERSION)
 		ext_event_finish_usage(&eb, CLAUDE_PROVIDER, root, true)
 		append(&out.events, ext_event_end(&eb, pb_done(&p)))
 
@@ -166,7 +134,7 @@ claude_map_hook :: proc(raw: string, ts: string, permission_timeout_ms := 0, per
 			pb_str_nonempty(&p, "subagent_type", json_get_string(ti, "subagent_type"))
 			pb_bool(&p, "run_in_background", json_get_bool(ti, "run_in_background"))
 		}
-		eb := ext_event_begin("tool.start", ts, root, CLAUDE_PROVIDER, CLAUDE_EXT_VERSION)
+		eb := ext_event_begin(.Tool_Start, ts, root, CLAUDE_PROVIDER, CLAUDE_EXT_VERSION)
 		ext_event_tool(&eb, root, input, nil)
 		append(&out.events, ext_event_end(&eb, pb_done(&p)))
 
@@ -187,7 +155,7 @@ claude_map_hook :: proc(raw: string, ts: string, permission_timeout_ms := 0, per
 			pb_str_nonempty(&p, "subagent_status", json_get_string(tr, "status"))
 			pb_str_nonempty(&p, "description", json_get_string(json_get_object(root, "tool_input"), "description"))
 		}
-		eb := ext_event_begin("tool.end", ts, root, CLAUDE_PROVIDER, CLAUDE_EXT_VERSION)
+		eb := ext_event_begin(.Tool_End, ts, root, CLAUDE_PROVIDER, CLAUDE_EXT_VERSION)
 		ext_event_tool(&eb, root, input, response)
 		ext_event_metrics(&eb, metrics)
 		ext_event_finish_usage(&eb, CLAUDE_PROVIDER, root, true)
@@ -203,7 +171,7 @@ claude_map_hook :: proc(raw: string, ts: string, permission_timeout_ms := 0, per
 		pb_str(&p, "status", "error")
 		pb_str_nonempty(&p, "error", clip_string(json_get_string(root, "error"), CLAUDE_MESSAGE_MAX))
 		if json_get_bool(root, "is_interrupt") do pb_bool(&p, "is_interrupt", true)
-		eb := ext_event_begin("tool.end", ts, root, CLAUDE_PROVIDER, CLAUDE_EXT_VERSION)
+		eb := ext_event_begin(.Tool_End, ts, root, CLAUDE_PROVIDER, CLAUDE_EXT_VERSION)
 		ext_event_tool(&eb, root, input, nil)
 		ext_event_metrics(&eb, metrics)
 		ext_event_finish_usage(&eb, CLAUDE_PROVIDER, root, true)
@@ -213,14 +181,14 @@ claude_map_hook :: proc(raw: string, ts: string, permission_timeout_ms := 0, per
 		append(&out.events, ext_compaction_event(ts, root, CLAUDE_PROVIDER, CLAUDE_EXT_VERSION, "pre"))
 
 	case .Subagent_Start:
-		eb := ext_event_begin("subagent.start", ts, root, CLAUDE_PROVIDER, CLAUDE_EXT_VERSION)
+		eb := ext_event_begin(.Subagent_Start, ts, root, CLAUDE_PROVIDER, CLAUDE_EXT_VERSION)
 		append(&out.events, ext_event_end(&eb, "{}"))
 
 	case .Subagent_Stop:
 		p := pb_make()
 		pb_str_nonempty(&p, "agent_transcript_path", json_get_string(root, "agent_transcript_path"))
 		pb_str_nonempty(&p, "last_assistant_message", clip_string(json_get_string(root, "last_assistant_message"), CLAUDE_MESSAGE_MAX))
-		eb := ext_event_begin("subagent.stop", ts, root, CLAUDE_PROVIDER, CLAUDE_EXT_VERSION)
+		eb := ext_event_begin(.Subagent_Stop, ts, root, CLAUDE_PROVIDER, CLAUDE_EXT_VERSION)
 		append(&out.events, ext_event_end(&eb, pb_done(&p)))
 
 	case .Notification:
@@ -230,25 +198,28 @@ claude_map_hook :: proc(raw: string, ts: string, permission_timeout_ms := 0, per
 		pb_str_nonempty(&p, "notification_type", ntype)
 		pb_str_nonempty(&p, "title", clip_string(json_get_string(root, "title"), CLAUDE_MESSAGE_MAX))
 		pb_str_nonempty(&p, "message", clip_string(json_get_string(root, "message"), CLAUDE_MESSAGE_MAX))
-		eb := ext_event_begin("notification", ts, root, CLAUDE_PROVIDER, CLAUDE_EXT_VERSION)
+		eb := ext_event_begin(.Notification, ts, root, CLAUDE_PROVIDER, CLAUDE_EXT_VERSION)
 		append(&out.events, ext_event_end(&eb, pb_done(&p)))
 
 	case .Permission_Request:
 		input := json_clip(root["tool_input"], CLAUDE_TOOL_STRING_MAX)
 		p := pb_make()
 		pb_str_nonempty(&p, "permission_mode", json_get_string(root, "permission_mode"))
-		if permission_timeout_ms > 0 do pb_int(&p, "timeout_ms", permission_timeout_ms)
-		pb_str_nonempty(&p, "blocker_id", permission_blocker_id)
+		pb_permission_relay(&p, permission_timeout_ms, permission_blocker_id)
 		if sugg := json_get_array(root, "permission_suggestions"); sugg != nil {
 			pb_value(&p, "permission_suggestions", json_clip(sugg, CLAUDE_TOOL_STRING_MAX))
 		}
-		eb := ext_event_begin("permission.request", ts, root, CLAUDE_PROVIDER, CLAUDE_EXT_VERSION)
+		eb := ext_event_begin(.Permission_Request, ts, root, CLAUDE_PROVIDER, CLAUDE_EXT_VERSION)
 		if input == nil do input = json.Object{}
 		ext_event_tool(&eb, root, input, nil)
 		append(&out.events, ext_event_end(&eb, pb_done(&p)))
 		out.is_permission = true
+		if json_get_string(root, "tool_name") == "Bash" {
+			out.shell_command = json_get_string(json_get_object(root, "tool_input"), "command")
+			out.shell_cwd = json_get_string(root, "cwd")
+		}
 	}
-	return out, .None
+	return hook_mapped_bounded(out)
 }
 
 // claude_file_edit_event builds file.edit for Edit / MultiEdit / Write.
@@ -317,7 +288,7 @@ claude_file_edit_event :: proc(root: json.Object, ts: string) -> (string, bool) 
 	if res.truncated do pb_bool(&p, "diff_truncated", true)
 	if res.binary do pb_bool(&p, "binary", true)
 	if json_get_bool(resp, "userModified") do pb_bool(&p, "user_modified", true)
-	eb := ext_event_begin("file.edit", ts, root, CLAUDE_PROVIDER, CLAUDE_EXT_VERSION)
+	eb := ext_event_begin(.File_Edit, ts, root, CLAUDE_PROVIDER, CLAUDE_EXT_VERSION)
 	ext_event_tool(&eb, root, nil, nil)
 	return ext_event_end(&eb, pb_done(&p)), true
 }
@@ -342,48 +313,4 @@ claude_structured_patch :: proc(arr: json.Array) -> []Diff_Hunk {
 		append(&hunks, h)
 	}
 	return hunks[:]
-}
-
-CLAUDE_DENY_DEFAULT_MESSAGE :: "Denied in Ninjy"
-
-// claude_permission_output renders Claude's PermissionRequest hook decision.
-// "none" (or anything else) yields "" — print nothing so the TUI prompt stays.
-claude_permission_output :: proc(decision, message: string) -> string {
-	b := strings.builder_make()
-	switch decision {
-	case "allow":
-		strings.write_string(&b, `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}`)
-	case "deny":
-		msg := message if strings.trim_space(message) != "" else CLAUDE_DENY_DEFAULT_MESSAGE
-		strings.write_string(&b, `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":`)
-		json_write_string(&b, msg)
-		strings.write_string(&b, `}}}`)
-	case:
-		return ""
-	}
-	return strings.to_string(b)
-}
-
-// claude_permission_output_from_response reads an agent.extension.permission
-// bridge response ({ok, data:{decision, message}}) and renders the hook output.
-// Errors, unreachable bridges and "none" all yield "".
-claude_permission_output_from_response :: proc(response: string) -> string {
-	value, err := json.parse_string(strings.trim_space(response), json.DEFAULT_SPECIFICATION, true)
-	if err != .None do return ""
-	root, ok := value.(json.Object)
-	if !ok || !json_get_bool(root, "ok") do return ""
-	data := json_get_object(root, "data")
-	// Tolerate one extra {data:{data:…}} envelope level.
-	if inner := json_get_object(data, "data"); inner != nil && !json_has(data, "decision") do data = inner
-	return claude_permission_output(json_get_string(data, "decision"), json_get_string(data, "message"))
-}
-
-// claude_permission_is_ham_ctl: a PermissionRequest for the Bash tool whose
-// command is one ham-ctl invocation (see is_ham_ctl_command).
-claude_permission_is_ham_ctl :: proc(raw, ctl_bin: string) -> bool {
-	value, err := json.parse_string(raw, json.DEFAULT_SPECIFICATION, true, context.temp_allocator)
-	if err != .None do return false
-	root, ok := value.(json.Object)
-	if !ok || json_get_string(root, "tool_name") != "Bash" do return false
-	return is_ham_ctl_command(json_get_string(json_get_object(root, "tool_input"), "command"), ctl_bin, json_get_string(root, "cwd"))
 }

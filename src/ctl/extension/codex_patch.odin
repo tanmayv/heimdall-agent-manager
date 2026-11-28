@@ -142,7 +142,7 @@ codex_patch_events :: proc(root: json.Object, ts: string) -> (events: [dynamic]s
 		pb_int(&p, "additions", result.additions)
 		pb_int(&p, "deletions", result.deletions)
 		pb_bool(&p, "diff_truncated", result.truncated)
-		eb := ext_event_begin("file.edit", ts, root, CODEX_PROVIDER, CODEX_EXT_VERSION)
+		eb := ext_event_begin(.File_Edit, ts, root, CODEX_PROVIDER, CODEX_EXT_VERSION)
 		ext_event_tool(&eb, root, nil, nil)
 		append(&events, ext_event_end(&eb, pb_done(&p)))
 	}

@@ -22,9 +22,9 @@ Mapped_Event :: struct {
 // map_fixture maps raw and validates every event with the shared contract
 // parser (the same one the bridge uses), returning them in order.
 @(private = "file")
-map_fixture :: proc(t: ^testing.T, raw: string, permission_timeout_ms := 0) -> (Claude_Mapped, [dynamic]Mapped_Event) {
+map_fixture :: proc(t: ^testing.T, raw: string, permission_timeout_ms := 0) -> (Hook_Mapped, [dynamic]Mapped_Event) {
 	mapped, err := claude_map_hook(raw, TS, permission_timeout_ms)
-	testing.expect_value(t, err, Claude_Error.None)
+	testing.expect_value(t, err, Hook_Error.None)
 	out := make([dynamic]Mapped_Event)
 	for e in mapped.events {
 		ev, perr := contracts.ext_parse_event(e)
@@ -41,6 +41,14 @@ map_fixture :: proc(t: ^testing.T, raw: string, permission_timeout_ms := 0) -> (
 	return mapped, out
 }
 
+// Bridge response → provider stdout, as hook_adapter_run renders it.
+permission_request_output_from_response :: proc(response: string) -> string {
+	return permission_request_output(permission_decision_from_response(response))
+}
+antigravity_output_from_response :: proc(response: string) -> string {
+	return antigravity_permission_output(permission_decision_from_response(response))
+}
+
 @(private = "file")
 payload_of :: proc(m: Mapped_Event) -> json.Object {
 	return json_get_object(m.root, "payload")
@@ -51,7 +59,6 @@ test_claude_session_start_maps_hello_and_session :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	defer free_all(context.temp_allocator)
 	mapped, evs := map_fixture(t, #load("testdata/claude/session_start_startup.json", string))
-	testing.expect_value(t, mapped.hook, Claude_Hook.Session_Start)
 	testing.expect_value(t, mapped.is_permission, false)
 	testing.expect_value(t, len(evs), 2)
 	if len(evs) != 2 do return
@@ -59,8 +66,11 @@ test_claude_session_start_maps_hello_and_session :: proc(t: ^testing.T) {
 	testing.expect_value(t, evs[0].ev.session_id, "cf4b17bd-aa1d-4d65-8f7d-63529dbb8b9f")
 	testing.expect_value(t, len(evs[0].ev.capabilities), 6)
 	testing.expect(t, slice.contains(evs[0].ev.capabilities[:], "usage"), "claude declares the usage capability")
-	want := CLAUDE_CAPABILITIES
-	for c, i in want do if i < len(evs[0].ev.capabilities) do testing.expect_value(t, evs[0].ev.capabilities[i], c)
+	i := 0
+	for c in contracts.Ext_Capability do if c in CLAUDE_CAPABILITIES {
+		if i < len(evs[0].ev.capabilities) do testing.expect_value(t, evs[0].ev.capabilities[i], contracts.ext_capability_name(c))
+		i += 1
+	}
 	testing.expect_value(t, evs[1].ev.kind, contracts.Ext_Event_Kind.Session)
 	testing.expect(t, strings.has_suffix(evs[1].ev.transcript_path, "cf4b17bd-aa1d-4d65-8f7d-63529dbb8b9f.jsonl"))
 	p := payload_of(evs[1])
@@ -343,12 +353,12 @@ test_claude_unknown_or_malformed_hooks_map_to_nothing :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	defer free_all(context.temp_allocator)
 	m, err := claude_map_hook(`{"hook_event_name":"FutureHook","session_id":"s"}`, TS)
-	testing.expect_value(t, err, Claude_Error.None)
+	testing.expect_value(t, err, Hook_Error.None)
 	testing.expect_value(t, len(m.events), 0)
 	_, err2 := claude_map_hook(`not json`, TS)
-	testing.expect_value(t, err2, Claude_Error.Malformed_Json)
+	testing.expect_value(t, err2, Hook_Error.Malformed_Json)
 	_, err3 := claude_map_hook(`[1,2]`, TS)
-	testing.expect_value(t, err3, Claude_Error.Malformed_Json)
+	testing.expect_value(t, err3, Hook_Error.Malformed_Json)
 }
 
 @(test)
@@ -375,20 +385,20 @@ test_claude_large_tool_strings_are_clipped :: proc(t: ^testing.T) {
 test_claude_permission_output_formats :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	defer free_all(context.temp_allocator)
-	testing.expect_value(t, claude_permission_output("allow", ""),
+	testing.expect_value(t, permission_request_output("allow", ""),
 		`{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}`)
-	testing.expect_value(t, claude_permission_output("deny", `no "rm" here`),
+	testing.expect_value(t, permission_request_output("deny", `no "rm" here`),
 		`{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"no \"rm\" here"}}}`)
-	testing.expect_value(t, claude_permission_output("deny", ""),
+	testing.expect_value(t, permission_request_output("deny", ""),
 		`{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied in Ninjy"}}}`)
-	testing.expect_value(t, claude_permission_output("none", "timeout"), "")
-	testing.expect_value(t, claude_permission_output("", ""), "")
+	testing.expect_value(t, permission_request_output("none", "timeout"), "")
+	testing.expect_value(t, permission_request_output("", ""), "")
 
-	testing.expect_value(t, claude_permission_output_from_response(`{"v":1,"id":"x","ok":true,"data":{"request_id":"perm_1","decision":"allow","message":""}}` + "\n"),
+	testing.expect_value(t, permission_request_output_from_response(`{"v":1,"id":"x","ok":true,"data":{"request_id":"perm_1","decision":"allow","message":""}}` + "\n"),
 		`{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}`)
-	testing.expect_value(t, claude_permission_output_from_response(`{"v":1,"id":"x","ok":true,"data":{"request_id":"perm_1","decision":"none","message":"hub unavailable"}}`), "")
-	testing.expect_value(t, claude_permission_output_from_response(`{"v":1,"id":"x","ok":false,"error":{"code":"bad_request"}}`), "")
-	testing.expect_value(t, claude_permission_output_from_response(``), "")
+	testing.expect_value(t, permission_request_output_from_response(`{"v":1,"id":"x","ok":true,"data":{"request_id":"perm_1","decision":"none","message":"hub unavailable"}}`), "")
+	testing.expect_value(t, permission_request_output_from_response(`{"v":1,"id":"x","ok":false,"error":{"code":"bad_request"}}`), "")
+	testing.expect_value(t, permission_request_output_from_response(``), "")
 }
 
 // ── hook_run (transport faked) ──────────────────────────────────────────────
@@ -593,7 +603,7 @@ test_hook_run_auto_approves_ham_ctl_bash_without_bridge :: proc(t: ^testing.T) {
 	raw := `{"session_id":"s1","cwd":"/home/dev/run","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"./bin/ham-ctl chat read"}}`
 	fake_reset(`{"ok":true,"data":{"decision":"deny"}}`, true)
 	out := hook_run("claude", raw, env, fake_send)
-	testing.expect_value(t, out, claude_permission_output("allow", ""))
+	testing.expect_value(t, out, permission_request_output("allow", ""))
 	testing.expect_value(t, fake_calls, 0)
 
 	// shell run through ham-ctl still goes to the bridge relay.
@@ -602,7 +612,7 @@ test_hook_run_auto_approves_ham_ctl_bash_without_bridge :: proc(t: ^testing.T) {
 	out = hook_run("claude", shell, env, fake_send)
 	testing.expect_value(t, fake_calls, 1)
 	testing.expect_value(t, fake_method, "agent.extension.permission")
-	testing.expect_value(t, out, claude_permission_output("deny", ""))
+	testing.expect_value(t, out, permission_request_output("deny", ""))
 
 	// Not Bash: never auto-approved.
 	write := `{"session_id":"s1","cwd":"/home/dev/run","hook_event_name":"PermissionRequest","tool_name":"Write","tool_input":{"file_path":"ham-ctl","content":"x"}}`
@@ -622,8 +632,7 @@ test_claude_pre_compact_maps_to_compaction :: proc(t: ^testing.T) {
 	defer free_all(context.temp_allocator)
 	raw := #load("testdata/claude/pre_compact_manual.json", string)
 	m, err := claude_map_hook(raw, TS)
-	testing.expect_value(t, err, Claude_Error.None)
-	testing.expect_value(t, m.hook, Claude_Hook.Pre_Compact)
+	testing.expect_value(t, err, Hook_Error.None)
 	testing.expect(t, !m.is_permission)
 	testing.expect_value(t, len(m.events), 1)
 	if len(m.events) != 1 do return
@@ -690,4 +699,24 @@ test_contract_compaction_parse_and_unknown_kinds :: proc(t: ^testing.T) {
 		testing.expect_value(t, e1, contracts.Ext_Error.None)
 		testing.expect_value(t, e1v.compaction_phase, "pre")
 	}
+}
+
+// Shared rules now cover Claude too: an event over the bridge's 256KB cap is
+// dropped instead of sent (hook_mapped_bounded), and a deny message is clipped
+// like every other provider's (permission_request_output).
+@(test)
+test_claude_shared_bounds_and_deny_clip :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	defer free_all(context.temp_allocator)
+	// Many short strings: each survives the 4KB string clip, the whole does not fit.
+	items := strings.repeat(`"aaaa",`, 70_000)
+	raw := strings.concatenate({`{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"X","tool_use_id":"tu1","tool_input":{"list":[`, items, `"z"]}}`})
+	mapped, err := claude_map_hook(raw, TS)
+	testing.expect_value(t, err, Hook_Error.Too_Large)
+	testing.expect_value(t, len(mapped.events), 0)
+
+	long := strings.repeat("n", PERMISSION_MESSAGE_MAX + 10)
+	out := permission_request_output("deny", long)
+	testing.expect(t, strings.contains(out, EXT_CLIP_MARKER), "deny message is clipped")
+	testing.expect(t, len(out) < PERMISSION_MESSAGE_MAX + 200)
 }
