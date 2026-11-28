@@ -112,7 +112,7 @@ export function AgentSettingsPanel({ state, agentLabel, projectLabel, closeRight
           id={headingId}
           ref={state.headingRef}
           tabIndex={-1}
-          className="min-w-0 truncate font-[family-name:var(--font-display)] leading-none outline-none"
+          className="min-w-0 truncate font-[family-name:var(--font-display)] outline-none"
         >
           Agent
         </Text>

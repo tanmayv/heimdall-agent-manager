@@ -126,6 +126,7 @@ test('docked: gear toggles, header is 48px single-row, focus moves, slides out o
     assert.ok(header.className.includes('h-12') && header.className.includes('items-center'), 'docked header matches 48px top chrome');
     const heading = doc.getElementById(panel.getAttribute('aria-labelledby')!)!;
     assert.equal(heading.textContent, 'Agent', 'aside is labelled by the Agent heading');
+    assert.equal(heading.className.includes('leading-none'), false, 'heading keeps natural line-height so descenders are not clipped');
     assert.equal(doc.activeElement, heading, 'focus moves to the heading');
     const subtitle = q(doc, 'agent-panel-subtitle')!;
     assert.equal(subtitle.textContent, 'coordinator #41 · heimdall');

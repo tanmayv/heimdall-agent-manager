@@ -57,11 +57,13 @@ try {
       );
       if (mode !== 'page') {
         const headerBox = await q('agent-panel-header').boundingBox();
+        const headingBox = await page.locator('[data-debug-id="agent-panel-header"] h2').boundingBox();
         const subtitleBox = await q('agent-panel-subtitle').boundingBox();
         const runtimeBox = await q('agent-panel-runtime').boundingBox();
-        assert.ok(headerBox, `${width}: panel header has bounding box`);
+        assert.ok(headerBox && headingBox, `${width}: panel header and heading have bounding boxes`);
         assert.ok(subtitleBox && runtimeBox, `${width}: subtitle and runtime section have bounding boxes`);
         assert.equal(Math.round(headerBox.height), 48, `${width}: panel header height matches 48px top chrome`);
+        assert.ok(headingBox.height >= 26, `${width}: heading line-box height should leave room for descenders, got ${JSON.stringify(headingBox)}`);
         assert.ok(subtitleBox.height >= 14, `${width}: subtitle should have visible height, got ${JSON.stringify(subtitleBox)}`);
         assert.ok(
           subtitleBox.y >= headerBox.y + headerBox.height - 1 && subtitleBox.y + subtitleBox.height <= runtimeBox.y + 1,
