@@ -605,3 +605,40 @@ pty_send_now_command_result_carries_the_outcome_cause :: proc(t: ^testing.T) {
 		testing.expect(t, found && contracts.runtime_send_now_outcome_from_cause(werr.cause) == o, raw)
 	}
 }
+
+pty_test_rollover_phase :: proc(id: string, phase: Bridge_Rollover_Phase) {
+	sync.mutex_lock(&bridge_rollover_mutex); defer sync.mutex_unlock(&bridge_rollover_mutex)
+	for &s in bridge_rollover_states do if s.agent_instance_id == id { s.phase = phase; return }
+	append(&bridge_rollover_states, Bridge_Rollover_State{agent_instance_id = strings.clone(id, bridge_rollover_heap()), phase = phase})
+}
+
+// S1 (CONTRACT-13): during a context rollover Send now and explicit modes
+// type nothing; the notice stays queued and the outcome is held.
+@(test)
+pty_send_now_during_a_rollover_types_nothing_and_reports_held :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+	context.allocator = runtime.heap_allocator()
+	env := pty_test_begin("pty-send-now-held"); defer pty_test_end(&env)
+	id := "inst_pty_send_now_held"
+	defer bridge_runtime_set_status(id, "stopped", "idle")
+	defer bridge_rollover_forget(id)
+	pty_test_activity(id, "active", "pane_diff")
+	notice := bridge_pty_host_unread_notice()
+	testing.expect(t, bridge_runtime_submit(id, {kind = .User_Message, id = "msg_held", text = notice, hub_message = true}))
+	rt := bridge_runtime_for(id)
+	for phase in ([]Bridge_Rollover_Phase{.Requested, .Persisting, .Restarting}) {
+		pty_test_rollover_phase(id, phase)
+		testing.expect(t, rt.send_now(id, {batch_id = "snb_held", attempt = 1}) == .Held, fmt.tprintf("%v", phase))
+		testing.expect(t, bridge_runtime_submit(id, {kind = .User_Message, id = "msg_held_steer", text = notice, hub_message = true}, .Steer), "an explicit steer stays queued")
+		testing.expect_value(t, len(pty_test_ops), 0)
+		testing.expect_value(t, len(pty_test_queued(id)), 1)
+	}
+	// The hold also keeps the queue drain from typing at an idle.
+	pty_test_activity(id, "idle", "claude_extension")
+	bridge_task_notice_tick(bridge_runtime_now_ms() + 20_000)
+	testing.expect_value(t, len(pty_test_ops), 0)
+	pty_test_rollover_phase(id, .Normal)
+	testing.expect(t, rt.send_now(id, {batch_id = "snb_held", attempt = 2}) == .Delivered)
+	testing.expect_value(t, pty_test_trace(), fmt.tprintf("Esc %q Enter Enter", notice))
+	testing.expect_value(t, len(pty_test_queued(id)), 0)
+}

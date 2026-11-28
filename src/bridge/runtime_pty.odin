@@ -197,12 +197,16 @@ pty_runtime_last_typed :: proc(instance: string) -> i64 {
 // Whether anything may be typed into an instance's terminal now. The one check
 // of every PTY delivery: the worker's queue drain (through notices_ready),
 // Send now and the explicit modes (CONTRACT-10).
-//   Not_Running: no snapshot, the child is not alive, a stop is in flight, or
-//                the agent has not reported start success.
-Pty_Deliverable :: enum u8 { Ready, Not_Running }
+//   Not_Running: no snapshot, the child is not alive, a stop is in flight
+//                (restart, reconfiguration, stop), or the agent has not
+//                reported start success (a start or restart in progress).
+//   Held:        a context rollover is in progress (CONTRACT-13): its
+//                request, handoff and restart own the terminal.
+Pty_Deliverable :: enum u8 { Ready, Not_Running, Held }
 
 pty_runtime_deliverable_snapshot :: proc(snap: Bridge_Runtime_Instance, ok: bool) -> Pty_Deliverable {
 	if !ok || !snap.pty_process_alive || snap.stopped_intent_unix_ms != 0 || !snap.start_success_seen do return .Not_Running
+	if bridge_rollover_phase_in_progress(bridge_rollover_phase_of(snap.agent_instance_id)) do return .Held
 	return .Ready
 }
 
@@ -216,6 +220,7 @@ pty_runtime_withheld_outcome :: proc(d: Pty_Deliverable) -> contracts.Runtime_Se
 	switch d {
 	case .Ready: return .Delivered
 	case .Not_Running: return .Not_Running
+	case .Held: return .Held
 	}
 	return .Failed
 }
