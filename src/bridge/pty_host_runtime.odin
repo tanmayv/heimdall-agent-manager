@@ -612,7 +612,6 @@ PTY_HOST_NOTICE_SECOND_ENTER_PAUSE :: 150 * time.Millisecond
 bridge_pty_host_deliver_line :: proc(socket, instance, text: string) -> bool {
 	decrypted := bridge_decrypt_embedded_vault_tokens(text)
 	defer delete(decrypted)
-	if bridge_runtime_is_acp(instance) do return acp_runtime_deliver(instance, decrypted)
 	delivery_text := decrypted
 	wrapped := ""
 	if bridge_pty_host_instance_wants_bracketed_paste(instance) {
@@ -645,10 +644,8 @@ bridge_pty_host_send_oneway :: proc(socket: string, frame: []byte) -> bool {
 // bridge_pty_host_deliver_raw_input delivers raw input bytes directly to the agent's
 // PTY stdin via CtlMsg::Input to the ham-pty-host daemon socket.
 bridge_pty_host_deliver_raw_input_socket_bytes :: proc(socket, instance: string, data: []byte) -> bool {
-	if bridge_runtime_is_acp(instance) {
-		if string(data) == "\x1b" || string(data) == "\x03" do return acp_runtime_command(instance, "interrupt")
-		return acp_runtime_deliver(instance, string(data))
-	}
+	// A runtime that owns its own input (ACP) maps keystrokes to turn input.
+	if rt := bridge_runtime_for(instance); rt.raw_input != nil do return rt.raw_input(instance, data)
 	if strings.trim_space(socket) == "" || strings.trim_space(instance) == "" do return false
 	frame := pty_host_encode_input(instance, data)
 	defer delete(frame)
@@ -795,9 +792,6 @@ bridge_shell_run_notice :: proc(session_id, status, exit_code: string) -> string
 // instead of finishing a long autonomous run first. The ESC is followed by a
 // short settle so the pane returns to its input box before we paste the notice.
 bridge_pty_host_deliver_message :: proc(socket, instance, sender: string) -> bool {
-	if bridge_runtime_is_acp(instance) {
-		return acp_chat_notify(instance)
-	}
 	esc := pty_host_encode_key(instance, .Esc)
 	defer delete(esc)
 	if !bridge_pty_host_send_oneway(socket, esc) do return false
@@ -812,10 +806,6 @@ bridge_pty_host_deliver_message :: proc(socket, instance, sender: string) -> boo
 // otherwise we fall back to the legacy generated notice for backwards compat with
 // older hubs that don't populate human_message.
 bridge_pty_host_deliver_task_nudge :: proc(socket, instance, task_id, target_role: string, human_message: string = "", task_title: string = "", interrupt: bool = false) -> bool {
-	if bridge_runtime_is_acp(instance) {
-		msg := bridge_pty_host_task_nudge_line(task_id, target_role, human_message, task_title); defer delete(msg)
-		return acp_runtime_deliver(instance, msg, lane = acp_inbox_lane(target_role, interrupt), key = task_id, kind = target_role)
-	}
 	if interrupt {
 		esc := pty_host_encode_key(instance, .Esc)
 		defer delete(esc)
@@ -839,10 +829,6 @@ bridge_pty_host_task_nudge_line :: proc(task_id, target_role, human_message: str
 // bridge_pty_host_deliver_notice delivers an arbitrary prefixed nudge/notice line
 // (title-nudge, startup prompt) verbatim.
 bridge_pty_host_deliver_notice :: proc(socket, instance, notice: string) -> bool {
-    if bridge_runtime_is_acp(instance) {
-        plain := bridge_decrypt_embedded_vault_tokens(notice); defer delete(plain)
-        return acp_runtime_deliver(instance, plain, lane = .Batch, kind = "notice")
-    }
 	return bridge_pty_host_deliver_line(socket, instance, notice)
 }
 
@@ -1006,7 +992,7 @@ bridge_pty_host_publish_agent_exit :: proc(instance: string, event_code: i32, ob
 	code, has_code := proof.exit_code.?
 	if proof.state != "exited" || !has_code || code != event_code do return
 	fmt.println("bridge pty-host: child exited", instance, "pid", proof.pid, "code", code)
-	if bridge_runtime_is_acp(instance) do acp_runtime_command(instance, "exit")
+	bridge_runtime_child_exited(instance)
 	// bridge_log relay: an agent that dies within BLOG_EARLY_EXIT_WINDOW of its
 	// launch (the launch record still has the tick) is almost always a provider
 	// CLI problem — not logged in, bad model flag, missing binary — and is the

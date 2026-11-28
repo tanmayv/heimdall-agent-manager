@@ -18,7 +18,6 @@ BRIDGE_TASK_NOTICE_MAX_AGE_MS :: i64(24*60*60*1000)
 
 Bridge_Task_Notice :: struct {
     instance, task, expected_state, origin, text: string,
-    interrupt: bool,
     queued_ms, due_ms: i64,
 }
 Bridge_Task_Notice_Queue :: struct {
@@ -33,7 +32,7 @@ bridge_task_notice_pty_deliver := bridge_pty_host_deliver_task_nudge
 
 bridge_task_notice_same :: proc(a, b: Bridge_Task_Notice) -> bool {
     return a.instance == b.instance && a.task == b.task && a.expected_state == b.expected_state &&
-        a.origin == b.origin && a.text == b.text && a.interrupt == b.interrupt
+        a.origin == b.origin && a.text == b.text
 }
 
 bridge_task_notice_delete :: proc(n: Bridge_Task_Notice) {
@@ -126,15 +125,14 @@ bridge_task_notice_relevant :: proc(n: Bridge_Task_Notice) -> bool {
     return !known || state == "" || string(state) == n.expected_state
 }
 
-bridge_task_notice_text :: proc(batch: []Bridge_Task_Notice) -> (string, bool) {
-    b := strings.builder_make(); interrupt := false
+bridge_task_notice_text :: proc(batch: []Bridge_Task_Notice) -> string {
+    b := strings.builder_make()
     for n in batch {
         if !bridge_task_notice_relevant(n) do continue
         if strings.builder_len(b) > 0 do strings.write_string(&b, " | ")
         strings.write_string(&b, n.text)
-        interrupt = interrupt || n.interrupt
     }
-    return strings.to_string(b), interrupt
+    return strings.to_string(b)
 }
 
 // All hub relevance reads run on the notice worker, outside ACP ownership and
@@ -147,29 +145,45 @@ bridge_task_notice_deliver :: proc(batch: []Bridge_Task_Notice) -> bool {
     // must not be mistaken for a PTY and acknowledged by a one-way socket write.
     snap, present := bridge_runtime_instance_snapshot(instance)
     if !present || !snap.pty_process_alive || snap.stopped_intent_unix_ms != 0 || !snap.start_success_seen do return false
-    acp := bridge_runtime_is_acp(instance)
-    if acp {
-        wants_interrupt := false
-        for n in batch do wants_interrupt = wants_interrupt || n.interrupt
-        ready_command := "task_notices_interrupt_ready" if wants_interrupt else "task_notices_ready"
-        if !acp_runtime_command(instance, ready_command) do return false
-    }
-    text, interrupt := bridge_task_notice_text(batch); defer delete(text)
+    // Notices never interrupt (CONTRACT-07): the runtime says whether a batch
+    // can start a turn now, and a busy agent keeps it queued here.
+    rt := bridge_runtime_for(instance)
+    if rt.notices_ready == nil || rt.deliver_notices == nil || !rt.notices_ready(instance) do return false
+    text := bridge_task_notice_text(batch); defer delete(text)
     if text == "" do return true
-    if acp {
-        raw, err := json.marshal(ACP_Task_Notice_Input{text, interrupt}, allocator = context.temp_allocator)
-        if err != nil do return false
-        command := strings.concatenate({"task_notices:", string(raw)}, context.temp_allocator)
-        return acp_runtime_command(instance, command)
+    return rt.deliver_notices(instance, text)
+}
+
+// A runtime reported a trusted idle (runtime_iface.odin): its queued notices
+// are due at the next tick. Leaf lock: the event sink may hold the runtime mutex.
+bridge_task_notice_kicks: [dynamic]string
+bridge_task_notice_kicks_mu: sync.Mutex
+
+bridge_task_notice_kick :: proc(instance: string) {
+    heap := runtime.heap_allocator()
+    sync.mutex_lock(&bridge_task_notice_kicks_mu); defer sync.mutex_unlock(&bridge_task_notice_kicks_mu)
+    for k in bridge_task_notice_kicks do if k == instance do return
+    if len(bridge_task_notice_kicks) >= 1024 do return
+    if bridge_task_notice_kicks.allocator.procedure == nil do bridge_task_notice_kicks = make([dynamic]string, heap)
+    append(&bridge_task_notice_kicks, strings.clone(instance, heap))
+}
+
+// Call with bridge_task_notices_mu held.
+bridge_task_notice_apply_kicks_locked :: proc(now: i64) {
+    heap := runtime.heap_allocator()
+    sync.mutex_lock(&bridge_task_notice_kicks_mu); defer sync.mutex_unlock(&bridge_task_notice_kicks_mu)
+    for k in bridge_task_notice_kicks {
+        for &n in bridge_task_notices.entries do if n.instance == k && n.due_ms > now do n.due_ms = now
+        delete(k, heap)
     }
-    socket, ok := bridge_task_notice_daemon(); if !ok do return false
-    return bridge_task_notice_pty_deliver(socket, instance, "", "", text, "", interrupt)
+    clear(&bridge_task_notice_kicks)
 }
 
 // One batch per instance; do not hold the producer lock across HTTP or provider I/O.
 bridge_task_notice_tick :: proc(now: i64) {
     batch := make([dynamic]Bridge_Task_Notice, allocator = context.temp_allocator)
     sync.mutex_lock(&bridge_task_notices_mu)
+    bridge_task_notice_apply_kicks_locked(now)
     i := 0
     expired := false
     for i < len(bridge_task_notices.entries) {

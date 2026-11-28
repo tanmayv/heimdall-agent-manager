@@ -1281,7 +1281,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		return
 	}
 	if type == contracts.ACP_SEND_NOW_BATCH_COMMAND || type == contracts.ACP_INPUTS_READ_COMMAND {
-		bridge_acp_delivery_command(conn, type, text)
+		bridge_runtime_delivery_command(conn, type, text)
 		return
 	}
 	if type == "notify_agent_message" {
@@ -1299,7 +1299,12 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		sender := sender_dn if sender_dn != "" else sender_id
 		// T6: during a context rollover the notice (which presses ESC) would
 		// interrupt the handoff; queue it until readiness or bounded stall recovery.
-		ok := bridge_rollover_queue_notice(instance_id, sender) || bridge_pty_host_deliver_to_agent(instance_id, "message", sender, "", "")
+		message_id := extract_json_string(text, "message_id", "")
+		defer delete(message_id)
+		notice := bridge_pty_host_message_notice(sender)
+		defer delete(notice)
+		ok := bridge_rollover_queue_notice(instance_id, sender) ||
+			bridge_runtime_submit(instance_id, {kind = .User_Message, id = message_id, text = notice, hub_message = true})
 		if !ok do fmt.println("bridge notification pending/no-agent-subscription", instance_id, command_id)
 		if command_id != "" {
 			res := bridge_command_result_json(command_id, "succeeded" if ok else "accepted", "")
@@ -1328,18 +1333,19 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		defer delete(task_title)
 		origin := extract_json_string(text, "origin", "")
 		defer delete(origin)
-		interrupt := extract_json_bool(text, "interrupt", false) || origin == "pausing" || origin == "finishing"
+		// The hub's interrupt flag (pausing/finishing) is no longer honoured:
+		// task notices never interrupt a busy agent (CONTRACT-07).
 		notice_task := extract_json_string(text, "notice_task_id", task_id); defer delete(notice_task)
 		expected_state := extract_json_string(text, "expected_state", ""); defer delete(expected_state)
 		line := bridge_pty_host_task_nudge_line(task_id, target_role, human_message, task_title); defer delete(line)
 		ok := false
-		if bridge_should_debounce_nudge(instance_id, notice_task, origin, expected_state, line, interrupt, record = false) {
+		if bridge_should_debounce_nudge(instance_id, notice_task, origin, expected_state, line, record = false) {
 			ok = true
 		} else {
 			now := bridge_runtime_now_ms()
 			ok = bridge_task_notice_enqueue({instance = instance_id, task = notice_task, expected_state = expected_state,
-				origin = origin, text = line, interrupt = interrupt, queued_ms = now, due_ms = now+BRIDGE_TASK_NOTICE_WINDOW_MS})
-			if ok do _ = bridge_should_debounce_nudge(instance_id, notice_task, origin, expected_state, line, interrupt)
+				origin = origin, text = line, queued_ms = now, due_ms = now+BRIDGE_TASK_NOTICE_WINDOW_MS})
+			if ok do _ = bridge_should_debounce_nudge(instance_id, notice_task, origin, expected_state, line)
 		}
 		if !ok do fmt.println("bridge notify_task_nudge pending/no-agent-subscription", instance_id, command_id)
 		if command_id != "" {
@@ -1374,22 +1380,8 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		notice := bridge_shell_run_notice(session_id, status, exit_code)
 		defer delete(notice)
 		fmt.println("bridge hub runtime command notify_shell_run", instance_id, session_id, status)
-		if socket, sok := bridge_pty_host_ensure_daemon(); sok || bridge_runtime_is_acp(instance_id) {
-			ok := false
-			if bridge_runtime_is_acp(instance_id) {
-				ok = acp_runtime_deliver(instance_id, notice, command_id, acp_inbox_lane("shell_run"), session_id, "shell_run")
-			} else {
-				ok = bridge_pty_host_deliver_notice(socket, instance_id, notice)
-			}
-			if command_id != "" {
-				res := bridge_command_result_json(command_id, "succeeded" if ok else "accepted", "")
-				defer delete(res)
-				_ = bridge_hub_send(conn, res)
-			}
-			return
-		}
-		ok := bridge_task_status_notify_wake_local(instance_id)
-		if !ok do fmt.println("bridge notify_shell_run pending/no-daemon", instance_id, command_id)
+		ok := bridge_runtime_notify(instance_id, {kind = .Notification, id = command_id, text = notice, key = session_id, origin = "shell_run"})
+		if !ok do fmt.println("bridge notify_shell_run pending/no-runtime", instance_id, command_id)
 		if command_id != "" {
 			res := bridge_command_result_json(command_id, "succeeded" if ok else "accepted", "")
 			defer delete(res)
@@ -1409,24 +1401,9 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		defer delete(message)
 		notice := strings.concatenate({"Nudge: ", message})
 		defer delete(notice)
-		if socket, sok := bridge_pty_host_ensure_daemon(); sok || bridge_runtime_is_acp(instance_id) {
-			ok := false
-			if bridge_runtime_is_acp(instance_id) {
-				plain := bridge_decrypt_embedded_vault_tokens(notice); defer delete(plain)
-				ok = acp_runtime_deliver(instance_id, plain, command_id, acp_inbox_lane("title_nudge"), "title", "title_nudge")
-			} else {
-				ok = bridge_pty_host_deliver_notice(socket, instance_id, notice)
-			}
-			if command_id != "" {
-				res := bridge_command_result_json(command_id, "succeeded" if ok else "accepted", "")
-				defer delete(res)
-				_ = bridge_hub_send(conn, res)
-			}
-			return
-		}
-		// Daemon unavailable: wake the local agent so it picks up the nudge on boot.
-		ok := bridge_task_status_notify_wake_local(instance_id)
-		if !ok do fmt.println("bridge notify_title_nudge pending/no-daemon", instance_id, command_id)
+		// No runtime accepts it here: wake the local agent so it picks up the nudge on boot.
+		ok := bridge_runtime_notify(instance_id, {kind = .Notification, id = command_id, text = notice, key = "title", origin = "title_nudge"})
+		if !ok do fmt.println("bridge notify_title_nudge pending/no-runtime", instance_id, command_id)
 		if command_id != "" {
 			res := bridge_command_result_json(command_id, "succeeded" if ok else "accepted", "")
 			defer delete(res)
@@ -1514,15 +1491,8 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 				// lives here. Deliver straight to the local agent via the daemon;
 				// otherwise wake the local agent (coalesced) so it can pick up the work
 				// on boot. Targets not local to this bridge are ignored.
-				pushed := false
-				if bridge_runtime_is_acp(inst) {
-					notice := bridge_pty_host_task_nudge_line(task_id, "participant", human_message); defer delete(notice)
-					plain := bridge_decrypt_embedded_vault_tokens(notice); defer delete(plain)
-					pushed = acp_runtime_deliver(inst, plain, command_id, .Batch, task_id, new_status)
-				} else {
-					pushed = bridge_pty_host_deliver_to_agent(inst, "task_nudge", "", task_id, "participant", human_message)
-				}
-				if pushed {
+				notice := bridge_pty_host_task_nudge_line(task_id, "participant", human_message); defer delete(notice)
+				if bridge_runtime_submit(inst, {kind = .Notification, id = command_id, text = notice, key = task_id, origin = new_status}) {
 					delivered += 1
 					continue
 				}
@@ -2717,14 +2687,11 @@ bridge_wake_nudge_live_child :: proc(instance_id, task_id, role, lease_id: strin
 	}
 	line := bridge_wake_nudge_line(lease_id, task_id, role)
 	defer delete(line)
-	delivered := false
-	if bridge_runtime_is_acp(instance_id) {
-		now := bridge_runtime_now_ms()
-		delivered = bridge_task_notice_enqueue({instance = instance_id, task = task_id, origin = "lease_wake",
-			text = line, queued_ms = now, due_ms = now})
-	} else {
-		delivered = bridge_pty_host_deliver_line(socket, instance_id, line)
-	}
+	// The durable notice queue hands the line to the agent's runtime at its
+	// next turn; a lease wake never interrupts a busy agent.
+	now := bridge_runtime_now_ms()
+	delivered := bridge_task_notice_enqueue({instance = instance_id, task = task_id, origin = "lease_wake",
+		text = line, queued_ms = now, due_ms = now})
 	if !delivered {
 		fmt.eprintln("bridge wake_agent: nudge delivery failed for live instance", instance_id)
 		return .Delivery_Failed
@@ -2904,7 +2871,7 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 			if !bridge_pty_host_close(socket, instance_id) {
 				return false, "cannot confirm the previous process exited", bridge_error(.agent_launch_failed, .replaced)
 			}
-			if bridge_runtime_is_acp(instance_id) do acp_runtime_detach(instance_id)
+			bridge_runtime_release(instance_id)
 		}
 	}
 	if launch_epoch != "" {
@@ -3033,7 +3000,7 @@ bridge_runtime_launch_provider_test :: proc(command_id, command_json: string) ->
 bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, endpoint, provider, model, agent_token, display_name: string, timeout_seconds: u64, project_path: string = "", permission_mode: string = "", provider_profile: string = "") -> (ok: bool, detail: string, err: Bridge_Error) {
     // A previous ACP child may already be dead while its driver still owns
     // routing. Join that owner before changing transport or spawning a PTY.
-    if bridge_runtime_is_acp(instance_id) do acp_runtime_detach(instance_id)
+    bridge_runtime_release(instance_id)
 	// T2b: the context window is resolved per launch from provider + model
 	// (override > shipped config > default); never detected from the provider.
 	bridge_ext_note_launch(instance_id, provider, model, provider_profile)
@@ -3142,10 +3109,7 @@ bridge_runtime_stop_agent_process :: proc(instance_id: string, force: bool, bot_
 	// running/starting (see bridge_runtime_note_activity_signal).
 	bridge_runtime_mark_stop_intent(instance_id)
 	bridge_runtime_set_status(instance_id, "stopping", "idle")
-	if bridge_runtime_is_acp(instance_id) {
-		acp_runtime_command(instance_id, "stop")
-		acp_runtime_detach(instance_id)
-	}
+	bridge_runtime_stop(instance_id)
 	// Wrapper-free: the bridge closes the instance on the ham-pty-host daemon
 	// directly (SIGTERM->SIGKILL + unregister). Token invalidation below is still
 	// done for defense-in-depth.
@@ -3611,6 +3575,8 @@ bridge_runtime_set_status_with_source_locked :: proc(instance_id, runtime_status
 				inst.runtime_status = runtime_status
 				if runtime_changed do inst.runtime_reason = reason
 				if runtime_changed && reason != .pty_child_exited do inst.process_exit = {}
+				// Turn events for the runtime interface (runtime_iface.odin).
+				if activity_changed do bridge_runtime_emit_activity(instance_id, inst.activity_status, activity_status)
 				if accept_activity do inst.activity_status = activity_status
 			}
 			// Independent lifecycle and screen-derived transitions reach the hub
@@ -3752,12 +3718,6 @@ bridge_runtime_instance_snapshot :: proc(instance_id: string) -> (Bridge_Runtime
 // Caller holds bridge_runtime_mutex. This field is always heap-owned.
 bridge_runtime_replace_acp_error :: proc(inst: ^Bridge_Runtime_Instance, value: string) {
     acp_runtime_replace(&inst.acp_error_code, value)
-}
-
-bridge_runtime_is_acp :: proc(instance: string) -> bool {
-    sync.mutex_lock(&bridge_runtime_mutex); defer sync.mutex_unlock(&bridge_runtime_mutex)
-    for inst in bridge_runtime_instances do if inst.agent_instance_id == instance do return inst.runtime_transport == "acp"
-    return false
 }
 
 // bridge_runtime_touch_liveness refreshes an ACTIVE instance's last_seen without

@@ -70,6 +70,16 @@ test_wake_nudge_live_child_keeps_process_and_refreshes_task_md :: proc(t: ^testi
 	}
 	bridge_runtime_record_launch(Bridge_Runtime_Launch{agent_instance_id = id, run_dir = run_dir})
 	defer bridge_runtime_remove_launch(id)
+	// The nudge goes through the durable notice queue (delivered at a trusted idle).
+	prev_q := bridge_task_notices; bridge_task_notices = {}
+	defer { bridge_task_notice_queue_delete(&bridge_task_notices); bridge_task_notices = prev_q }
+	prev_data := bridge_config.data_dir
+	notice_dir := fmt.aprintf("%s/.cache/heimdall-tests/wake-nudge-%d", os.get_env("HOME", context.temp_allocator), os.get_pid())
+	bridge_config.data_dir = notice_dir
+	defer { bridge_config.data_dir = prev_data; os.remove_all(notice_dir); delete(notice_dir) }
+	bridge_runtime_set_status(id, "running", "idle")
+	defer bridge_runtime_set_status(id, "stopped", "idle")
+	wake_test_trusted_idle(id)
 
 	path := fmt.aprintf("/tmp/ham-t8-nudge-%d.sock", os.get_pid())
 	defer delete(path)
@@ -160,14 +170,17 @@ test_wake_nudge_live_child_keeps_process_and_refreshes_task_md :: proc(t: ^testi
 	})
 	defer delete(wake)
 	bridge_hub_handle_wake_agent(nil, wake)
+	bridge_task_notice_tick(bridge_runtime_now_ms()+BRIDGE_TASK_NOTICE_WINDOW_MS)
 	launch, has := bridge_runtime_get_launch(id)
 	testing.expect(t, has && launch.role == "worker", "launch record kept, role refreshed")
 	// Model the state after restart: the token and live daemon survived, and
 	// adoption restored runtime readiness but not the in-memory launch record.
 	bridge_runtime_remove_launch(id)
 	bridge_runtime_set_status(id, "running", "idle")
+	wake_test_trusted_idle(id)
 	_ = os.remove(task_md)
 	bridge_hub_handle_wake_agent(nil, wake)
+	bridge_task_notice_tick(bridge_runtime_now_ms()+BRIDGE_TASK_NOTICE_WINDOW_MS)
 	snapshot, _ := bridge_runtime_instance_snapshot(id)
 	testing.expect(t, snapshot.runtime_status == "running" && snapshot.start_success_seen, "same-generation wake preserves readiness")
 	sync.atomic_store(&server.stop, true)
@@ -186,4 +199,18 @@ test_wake_nudge_live_child_keeps_process_and_refreshes_task_md :: proc(t: ^testi
 	sync.mutex_lock(&bridge_local_token_mutex)
 	testing.expect_value(t, bridge_local_token_records[0].invalidated_at_unix_ms, 0) // token not rotated
 	sync.mutex_unlock(&bridge_local_token_mutex)
+}
+
+// wake_test_trusted_idle records a pane-diff idle (a trusted idle source) for
+// an instance, as the activity detector would.
+wake_test_trusted_idle :: proc(id: string) {
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	for &inst in bridge_runtime_instances do if inst.agent_instance_id == id {
+		inst.activity_status = "idle"
+		inst.activity_source = "pane_diff"
+		inst.activity_updated_unix_ms = bridge_runtime_now_ms()
+		inst.pty_process_alive = true
+		inst.start_success_seen = true
+	}
 }

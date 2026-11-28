@@ -625,7 +625,9 @@ bridge_rollover_report_idle_default :: proc(instance_id, source: string) {
 }
 
 bridge_rollover_deliver_notice_default :: proc(instance_id, sender: string) -> bool {
-	return bridge_pty_host_deliver_to_agent(instance_id, "message", sender, "", "")
+	notice := bridge_pty_host_message_notice(sender)
+	defer delete(notice)
+	return bridge_runtime_submit(instance_id, {kind = .User_Message, text = notice, hub_message = true})
 }
 
 bridge_rollover_rec_for :: proc(instance_id: string) -> (rec: Bridge_Local_Agent_Token_Record, ok: bool) {

@@ -5,7 +5,6 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:strings"
 import contracts "odin_test:contracts"
-import ws "odin_test:lib/ws"
 
 // ACP user-input delivery evidence and conversation-level Send now batches.
 //
@@ -392,31 +391,4 @@ acp_delivery_hello :: proc(r: ^ACP_Runtime) {
         return
     }
     acp_delivery_report(r, entries[:])
-}
-
-// Hub runtime commands. The batch command id is attempt-specific, and only a
-// success is cached, so neither a duplicate frame re-executes nor a cached
-// failure blocks an explicit retry. The dispatcher re-validates regardless.
-bridge_acp_delivery_command :: proc(conn: ^ws.Connection, type, text: string) {
-    command_id := extract_json_string(text, "command_id", "")
-    defer delete(command_id)
-    if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return }
-    ok := false
-    if type == contracts.ACP_SEND_NOW_BATCH_COMMAND {
-        cmd: contracts.ACP_Send_Now_Batch_Command
-        if json.unmarshal_string(text, &cmd, allocator = context.temp_allocator) == nil && acp_runtime_owned(cmd.agent_instance_id) {
-            raw := acp_event_json(ACP_Send_Now_Request{launch_epoch = cmd.launch_epoch, batch_id = cmd.batch_id, attempt = cmd.attempt, message_ids = cmd.message_ids})
-            ok = acp_runtime_command(cmd.agent_instance_id, strings.concatenate({"send_now_batch:", raw}, context.temp_allocator))
-        }
-    } else {
-        cmd: contracts.ACP_Inputs_Read_Command
-        if json.unmarshal_string(text, &cmd, allocator = context.temp_allocator) == nil && acp_runtime_owned(cmd.agent_instance_id) {
-            ok = acp_runtime_command(cmd.agent_instance_id, strings.concatenate({"inputs_read:", acp_event_json(cmd.message_ids)}, context.temp_allocator))
-        }
-    }
-    if command_id == "" do return
-    final := bridge_command_result_json(command_id, "succeeded", "") if ok else bridge_command_failed_json(command_id, bridge_cause_wire_error("acp_runtime_unavailable", "the ACP runtime did not accept the command"), "")
-    defer delete(final)
-    if ok do bridge_runtime_cache_command(command_id, final)
-    _ = bridge_hub_send(conn, final)
 }

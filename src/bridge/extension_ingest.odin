@@ -189,6 +189,24 @@ bridge_ext_usage_observe :: proc(instance_id: string, ev: contracts.Ext_Event, n
 	if token_changed do bridge_ext_token_enqueue_due(now, instance_id)
 }
 
+// bridge_ext_usage_snapshot is the runtime interface's usage read: the
+// instance's accumulated usage from extension events and ACP protocol usage
+// alike (one accumulator, G7). source is temp-allocated.
+bridge_ext_usage_snapshot :: proc(instance_id: string) -> (usage: contracts.Ext_Usage, ok: bool) {
+	sync.mutex_lock(&bridge_ext_mutex)
+	defer sync.mutex_unlock(&bridge_ext_mutex)
+	for s in bridge_ext_states {
+		if s.agent_instance_id != instance_id do continue
+		u := s.token_usage
+		if u.updated_at_ms == 0 do return {}, false
+		window := bridge_ext_token_usage_window(u)
+		return contracts.Ext_Usage{context_tokens = u.context_tokens, output_tokens_total = u.output_tokens_total,
+			has_output_tokens_total = u.has_output_total, context_window = window, has_context_window = window > 0,
+			source = strings.clone(u.context_source, context.temp_allocator)}, true
+	}
+	return {}, false
+}
+
 bridge_ext_ingest_result_destroy :: proc(res: ^Bridge_Ext_Ingest_Result) {
 	context.allocator = bridge_ext_allocator()
 	for e in res.errors do delete(e)

@@ -15,8 +15,15 @@ bridge_event_notice_proc: proc(instance_id: string, notice: contracts.Delivery_N
 bridge_event_send_proc: proc(conn: ^ws.Connection, text: string) -> bool = bridge_hub_send
 bridge_event_rollover_proc: proc(instance_id, sender: string) -> bool = bridge_rollover_queue_notice
 bridge_event_deliver_proc: proc(instance_id, kind, sender, a, b, line: string) -> bool = bridge_event_deliver_notice
+// Event notices go through the agent's runtime: a message notice points at a
+// hub conversation message, an events notice is a notification (never interrupts).
 bridge_event_deliver_notice :: proc(instance_id, kind, sender, a, b, line: string) -> bool {
-    return bridge_pty_host_deliver_to_agent(instance_id, kind, sender, a, b, human_message = line)
+    if kind == "message" {
+        notice := bridge_pty_host_message_notice(sender); defer delete(notice)
+        return bridge_runtime_submit(instance_id, {kind = .User_Message, text = notice, hub_message = true})
+    }
+    notice := bridge_pty_host_task_nudge_line(a, b, line); defer delete(notice)
+    return bridge_runtime_submit(instance_id, {kind = .Notification, text = notice, key = a, origin = sender})
 }
 bridge_event_now_proc: proc() -> i64 = bridge_runtime_now_ms
 

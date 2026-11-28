@@ -116,7 +116,7 @@ notice_queue_pty_batches_two_seconds_filters_stale_and_merges_restore :: proc(t:
     testing.expect(t, bridge_task_notice_enqueue(notice_test_n("first")))
     bridge_task_notice_tick(2999)
     testing.expect_value(t, notice_test_turns, 0)
-    second := notice_test_n("second", 2700); second.interrupt = true
+    second := notice_test_n("second", 2700)
     testing.expect(t, bridge_task_notice_enqueue(second))
     stale := notice_test_n("stale", 2800); stale.expected_state = "in_progress"
     testing.expect(t, bridge_task_notice_enqueue(stale))
@@ -129,7 +129,7 @@ notice_queue_pty_batches_two_seconds_filters_stale_and_merges_restore :: proc(t:
     bridge_task_notice_tick(3000)
     testing.expect_value(t, notice_test_turns, 1)
     testing.expect_value(t, notice_test_text, "first | second | legacy")
-    testing.expect(t, notice_test_interrupt)
+    testing.expect(t, !notice_test_interrupt, "notices never interrupt (CONTRACT-07)")
     bridge_task_notice_tick(9000)
     testing.expect_value(t, notice_test_turns, 1)
     saved, read_err := os.read_entire_file(path, context.allocator); defer delete(saved)
