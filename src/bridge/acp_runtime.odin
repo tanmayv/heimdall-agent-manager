@@ -503,6 +503,15 @@ acp_runtime_build_spawn :: proc(r: ^ACP_Runtime, endpoint, token: string, pp: ^P
         meta_json = string(meta), has_meta = true}, true
 }
 
+// acp_runtime_inbox_relaunch: the inbox outlives launches. A Send now batch
+// of the replaced launch is over: its members go back to ordinary queued
+// inputs.
+acp_runtime_inbox_relaunch :: proc(r: ^ACP_Runtime) {
+    if !acp_send_now_active(r) do return
+    bridge_inbox_send_now_set_state(r.inbox, "failed")
+    for &input in r.inbox.queue do if input.kind == BRIDGE_INBOX_SEND_NOW_KIND do acp_runtime_replace(&input.kind, "")
+}
+
 acp_runtime_launch :: proc(command, instance, epoch, etag, run_dir, endpoint, provider, model, token, permission_mode, profile: string) -> (bool, string, Bridge_Error) {
     context.allocator = runtime.heap_allocator()
     if !acp_state_component_ok(epoch) do return false, "invalid_launch_epoch", bridge_error(.agent_launch_failed, .unsupported)
@@ -526,12 +535,7 @@ acp_runtime_launch :: proc(command, instance, epoch, etag, run_dir, endpoint, pr
     acp_provider_binding_delete(&r.binding); r.binding = acp_provider_binding_copy(binding)
     r.d.phase = strings.clone("initialize"); r.d.starter = strings.clone(catalog.starter_prompt)
     if r.state_path == "" || r.inbox_unreadable { acp_runtime_destroy(r); return false, "acp_state_write_failed", bridge_error(.agent_launch_failed) }
-    // The inbox outlives launches. A Send now batch of the replaced launch is
-    // over: its members go back to ordinary queued inputs.
-    if acp_send_now_active(r) {
-        bridge_inbox_send_now_set_state(r.inbox, "failed")
-        for &input in r.inbox.queue do if input.kind == BRIDGE_INBOX_SEND_NOW_KIND do acp_runtime_replace(&input.kind, "")
-    }
+    acp_runtime_inbox_relaunch(r)
     initial := ACP_State{schema_version = 1, instance = strings.clone(instance), launch_epoch = strings.clone(epoch), effective_transport = strings.clone("acp"), next_rpc_id = 1, next_delivery_id = 1}
     acp_runtime_checkpoint(r, &initial)
     written := acp_state_write(r.state_path, &initial); acp_state_delete(&initial)

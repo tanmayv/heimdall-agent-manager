@@ -1,5 +1,6 @@
 package main
 
+import "base:runtime"
 import "core:encoding/json"
 import "core:fmt"
 import "core:mem"
@@ -497,4 +498,35 @@ sn_durable_send_now_round_trips_and_validates :: proc(t: ^testing.T) {
         acp_chat_destroy(&r)
         _ = fmt.tprintf("")
     })
+}
+
+// S4: the claimed ACP inbox outlives a relaunch (its file is the truth), and
+// a Send now batch still open from the previous launch falls back to
+// ordinary queued inputs.
+@(test)
+acp_inbox_outlives_relaunch_and_an_open_batch_falls_back_to_queued :: proc(t: ^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+    context.allocator = runtime.heap_allocator()
+    env := pty_test_begin("acp-relaunch"); defer pty_test_end(&env)
+    id := "inst_acp_relaunch"
+    first := bridge_inbox_claim(id, acp_agent_runtime.transport)
+    if !testing.expect(t, first != nil) do return
+    for m in ([]string{"msg_a", "msg_b"}) {
+        testing.expect(t, bridge_inbox_admit(first, {id = strings.clone(m), text = strings.clone("body"), lane = .Steer}, 1) == .Added)
+    }
+    bridge_inbox_send_now_begin(first, "snb_old", 1)
+    testing.expect_value(t, bridge_inbox_send_now_freeze(first, {"msg_b"}), 1)
+    bridge_inbox_send_now_set_state(first, "waiting")
+    testing.expect(t, bridge_inbox_save(first))
+    bridge_inbox_release(first) // the old launch's runtime detaches
+    r := ACP_Runtime{inbox = bridge_inbox_claim(id, acp_agent_runtime.transport)}
+    if !testing.expect(t, r.inbox != nil) do return
+    defer bridge_inbox_release(r.inbox)
+    testing.expect_value(t, len(r.inbox.queue), 2)
+    testing.expect(t, acp_send_now_active(&r), "the old batch is still open")
+    acp_runtime_inbox_relaunch(&r)
+    testing.expect(t, !acp_send_now_active(&r))
+    testing.expect_value(t, r.inbox.send_now.state, "failed")
+    for input in r.inbox.queue do testing.expect(t, input.kind != BRIDGE_INBOX_SEND_NOW_KIND, input.id)
+    testing.expect(t, bridge_inbox_index(r.inbox, "msg_a") >= 0 && bridge_inbox_index(r.inbox, "msg_b") >= 0, "both inputs stay queued")
 }
