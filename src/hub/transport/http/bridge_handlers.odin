@@ -2328,6 +2328,22 @@ bridge_ws_process_binary_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, c
 	return true
 }
 
+// The sensitive lane borrows and scrubs the wire. Keep its JSON body out
+// of the generic parser, which materializes a DOM on the reader heap.
+@(private="file")
+bridge_ws_process_channel_vault_reply :: proc(h: ^Bridge_Handlers, bridge_id: string, generation: int, text: string) {
+	if len(text) > contracts.BOT_CHANNEL_VAULT_MAX_FRAME do return
+	scratch: virtual.Arena
+	if virtual.arena_init_growing(&scratch) != nil do return
+	defer virtual.arena_destroy(&scratch)
+	a := virtual.arena_allocator(&scratch)
+	reply: contracts.Bot_Channel_Vault_Result
+	defer if len(reply.body) > 0 do crypto.zero_explicit(raw_data(reply.body), len(reply.body))
+	if json.unmarshal_string(text, &reply, .JSON, a) == nil {
+		_ = bridge_runtime_service.complete_bot_channel_vault(h.bridge_runtime_registry, bridge_id, generation, reply)
+	}
+}
+
 // connection is this reader's own registry connection (nil in unit tests that drive
 // frames without a registered socket).
 bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connection_generation: int, client: net.TCP_Socket, reassemblies: ^[dynamic]Bridge_Chunk_Reassembly, raw_text: string, connection: ^project_service.Bridge_Runtime_Connection = nil) -> bool {
@@ -2345,8 +2361,14 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		_ = project_service.bridge_runtime_connection_send_farewell(connection, bridge_connection_replaced_payload())
 		return false
 	}
+	if contracts.bot_channel_vault_frame_is(text, contracts.BOT_CHANNEL_VAULT_RESULT_FRAME) {
+		defer delete(text)
+		defer crypto.zero_explicit(raw_data(text), len(text))
+		metrics.counter_inc(metrics.with(project_service.fleet_metrics.bridge_ws_frames, "rx", project_service.bridge_frame_kind(contracts.BOT_CHANNEL_VAULT_RESULT_FRAME)))
+		bridge_ws_process_channel_vault_reply(h, bridge_id, connection_generation, text)
+		return true
+	}
 	type := json_string(text, "type")
-	chunked := false
 	// Chunk reassembly. A real chunk frame has kind:"chunk" and NO top-level
 	// "type" (its payload_fragment is base64, so it can never contain a "type"
 	// key) — that is what distinguishes it from a normal frame whose file
@@ -2377,8 +2399,13 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 			}
 			if !complete do return true
 			text = assembled
+			// Vault replies never use the generic chunk transport.
+			if contracts.bot_channel_vault_frame_is(text, contracts.BOT_CHANNEL_VAULT_RESULT_FRAME) {
+				crypto.zero_explicit(raw_data(text), len(text))
+				delete(text)
+				return true
+			}
 			type = json_string(text, "type")
-			chunked = true
 		} else {
 			delete(kind)
 		}
@@ -2410,16 +2437,6 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 	context.allocator = frame_allocator
 
 	switch type {
-	case contracts.BOT_CHANNEL_VAULT_RESULT_FRAME:
-		defer crypto.zero_explicit(raw_data(text), len(text))
-		// No generic cache, acknowledgement, frame logging or chunk transport.
-		if !chunked && len(text) <= contracts.BOT_CHANNEL_VAULT_MAX_FRAME {
-			reply: contracts.Bot_Channel_Vault_Result
-			defer if len(reply.body) > 0 do crypto.zero_explicit(raw_data(reply.body), len(reply.body))
-			if json.unmarshal_string(text, &reply, .JSON, context.allocator) == nil {
-				_ = bridge_runtime_service.complete_bot_channel_vault(h.bridge_runtime_registry, bridge_id, connection_generation, reply)
-			}
-		}
 	case contracts.SECURE_FORM_REGISTER_FRAME:
 		secure_form_bridge_register(h, bridge_id, connection_generation, client, text)
 	case "stream_register", "stream_ended":

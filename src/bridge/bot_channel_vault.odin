@@ -10,39 +10,10 @@ import channelvault "odin_test:lib/channelvault"
 import vault "odin_test:lib/vault"
 import ws "odin_test:lib/ws"
 
-// Tokenization borrows the frame, never builds a DOM that copies Body. Only
-// an actual root key qualifies; a nested type or a string value does not.
-bridge_bot_channel_vault_frame :: proc(raw: string) -> bool {
-	tok := json.make_tokenizer(raw, .JSON, true)
-	first, first_err := json.get_token(&tok)
-	if first_err != nil || first.kind != .Open_Brace do return false
-	depth := 1
-	key_position := true
-	for depth > 0 {
-		value, err := json.get_token(&tok)
-		if err != nil do return false
-		if depth == 1 && key_position {
-			key_position = false
-			if value.kind == .String && value.text == "\"type\"" {
-				colon, colon_err := json.get_token(&tok)
-				if colon_err != nil || colon.kind != .Colon do return false
-				kind, kind_err := json.get_token(&tok)
-				return kind_err == nil && kind.kind == .String && kind.text == ("\"" + contracts.BOT_CHANNEL_VAULT_REQUEST_FRAME + "\"")
-			}
-		}
-		#partial switch value.kind {
-		case .Open_Brace, .Open_Bracket: depth += 1
-		case .Close_Brace, .Close_Bracket: depth -= 1
-		case .Comma: if depth == 1 do key_position = true
-		}
-	}
-	return false
-}
-
 // Runs only on the authenticated runtime socket's read loop. This is never a
 // dispatcher job, cached command result, CLI/agent operation, or durable event.
 bridge_bot_channel_vault_receive :: proc(conn: ^ws.Connection, frame: string) -> bool {
-	if !bridge_bot_channel_vault_frame(frame) do return false
+	if !contracts.bot_channel_vault_frame_is(frame, contracts.BOT_CHANNEL_VAULT_REQUEST_FRAME) do return false
 	defer channelvault.wipe(frame) // read loop owns and frees the frame
 	if len(frame) > contracts.BOT_CHANNEL_VAULT_MAX_FRAME || conn == nil || !conn.connected ||
 	   !sync.atomic_load(&bridge_hub_runtime_up) || sync.atomic_load(&bridge_hub_traffic_stopped) {return true}

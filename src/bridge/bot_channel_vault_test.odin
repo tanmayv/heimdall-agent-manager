@@ -33,7 +33,7 @@ test_channel_vault_frame_is_consumed_and_scrubbed_even_when_disconnected :: proc
 		testing.expect(t, !bridge_bot_channel_vault_receive(nil, normal))
 		testing.expect_value(t, normal, sample)
 	}
-	testing.expect(t, bridge_bot_channel_vault_frame(`{"padding":{"type":"unrelated"},"type":"bot_channel_vault"}`))
+	testing.expect(t, contracts.bot_channel_vault_frame_is(`{"padding":{"type":"unrelated"},"type":"bot_channel_vault"}`, contracts.BOT_CHANNEL_VAULT_REQUEST_FRAME))
 }
 
 Channel_Vault_Log_Test :: struct { count: int }
@@ -109,7 +109,7 @@ channel_vault_wire_exchange :: proc(t: ^testing.T, hub_conn, bridge_conn: ^ws.Co
 	if !testing.expect(t, err == nil && ws.send_text_sensitive(hub_conn, string(wire))) do return ""
 	body, opcode, got := ws.poll_frame(bridge_conn)
 	defer {channelvault.wipe(body); delete(body)}
-	if !testing.expect(t, got && opcode == 0x1 && bridge_bot_channel_vault_frame(body)) do return ""
+	if !testing.expect(t, got && opcode == 0x1 && contracts.bot_channel_vault_frame_is(body, contracts.BOT_CHANNEL_VAULT_REQUEST_FRAME)) do return ""
 	bridge_bot_channel_vault_reply(bridge_conn, body, req.bridge_id, now_ms, key)
 	raw_reply, reply_opcode, got_reply := ws.poll_frame(hub_conn)
 	defer {channelvault.wipe(raw_reply); delete(raw_reply)}

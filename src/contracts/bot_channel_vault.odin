@@ -30,6 +30,35 @@ Bot_Channel_Vault_Result :: struct {
 	type, request_id, operation, status, scope_digest, body: string,
 }
 
+// Tokenization borrows the frame, never builds a DOM that copies Body. Only
+// an actual root key qualifies; a nested type or a string value does not.
+bot_channel_vault_frame_is :: proc(raw, frame_type: string) -> bool {
+	tok := json.make_tokenizer(raw, .JSON, true)
+	first, first_err := json.get_token(&tok)
+	if first_err != nil || first.kind != .Open_Brace do return false
+	depth := 1
+	key_position := true
+	for depth > 0 {
+		value, err := json.get_token(&tok)
+		if err != nil do return false
+		if depth == 1 && key_position {
+			key_position = false
+			if value.kind == .String && value.text == "\"type\"" {
+				colon, colon_err := json.get_token(&tok)
+				if colon_err != nil || colon.kind != .Colon do return false
+				kind, kind_err := json.get_token(&tok)
+				return kind_err == nil && kind.kind == .String && len(kind.text) >= 2 && kind.text[1:len(kind.text)-1] == frame_type
+			}
+		}
+		#partial switch value.kind {
+		case .Open_Brace, .Open_Bracket: depth += 1
+		case .Close_Brace, .Close_Bracket: depth -= 1
+		case .Comma: if depth == 1 do key_position = true
+		}
+	}
+	return false
+}
+
 // Metadata-only correlation digest. The connection identity and waiter
 // source checks still apply. This is not the secret authorship proof.
 bot_channel_vault_scope_digest :: proc(req: Bot_Channel_Vault_Request, allocator := context.allocator) -> (string, bool) {
