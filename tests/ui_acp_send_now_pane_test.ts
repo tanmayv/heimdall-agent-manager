@@ -44,7 +44,9 @@ type Hub = { transport: 'acp' | 'pty'; messages: any[]; posts: Array<{ path: str
   /** providers[].acp_availability for claude on provider-status (T6 panel); omitted = older hub. */
   acpAvailability?: any;
   /** When set, POSTs under /bridges/ (the panel's ACP fixes) are recorded here and answered 202. */
-  bridgePosts?: Array<{ path: string; body: any }> };
+  bridgePosts?: Array<{ path: string; body: any }>;
+  /** GET send-now agent_notified_at (PTY: when the bridge typed the unread notice); omitted = ''. */
+  notifiedAt?: string };
 
 async function fixture(hub: Hub, run: (ctx: any) => Promise<void>) {
   const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost/#/conversations/worker', pretendToBeVisual: true });
@@ -104,7 +106,7 @@ async function fixture(hub: Hub, run: (ctx: any) => Promise<void>) {
     else if (path.includes('/chats/by-instance/')) data = { conversation_id: 'workerchat', agent_instance_id: 'worker', agent_id: 'worker-identity', runtime_status: 'running' };
     else if (path.endsWith('/messages')) data = [...hub.messages].reverse();
     else if (path.endsWith('/send-now')) data = { conversation_id: 'workerchat', runtime_transport: hub.transport, send_now: hub.transport === 'acp' ? 'members' : 'notice', launch_epoch: 'ep1', steering_supported: false,
-      batch: hub.posts.some((p) => p.path.endsWith('/send-now')) ? hub.sendNowReply.body?.data?.batch ?? null : null };
+      agent_notified_at: hub.notifiedAt ?? '', batch: hub.posts.some((p) => p.path.endsWith('/send-now')) ? hub.sendNowReply.body?.data?.batch ?? null : null };
     else if (/\/agent-instances\/[^/]+$/.test(path)) data = { agent_instance_id: 'worker', agent_id: 'identity', provider: 'claude', model: 'opus', bridge_id: 'b',
       runtime_status: 'running', runtime_transport: hub.transport, launch_epoch: 'ep1', configuration_revision: 7 };
     else if (path.endsWith('/reconfigurations')) data = { operations: hub.configuration?.operations || [] };
@@ -301,13 +303,50 @@ test('PTY pane: transcript unchanged; Send now asks the agent to read its unread
     assert.equal(queuedIds().length, 0, 'unread PTY rows stay in the transcript');
     assert.match(q('conversation-thread-message-msg_p0-status')?.textContent || '', /Read/, 'legacy read_at semantics kept');
     await wait(() => Boolean(q('conversation-queued-send-now')), 'Send now offered by the runtime capability');
-    assert.match(q('conversation-queued-title')!.textContent || '', /2 messages not read yet/);
+    assert.match(q('conversation-queued-title')!.textContent || '', /Waiting for the current turn/, 'never notified yet');
+    assert.match(q('conversation-queued-status')!.textContent || '', /2 messages waiting for the current turn/);
     await act(async () => q('conversation-queued-send-now')!.click());
     await wait(() => hub.posts.some((p) => p.path.endsWith('/send-now')), 'send-now posted');
     const post = hub.posts.find((p) => p.path.endsWith('/send-now'))!;
     assert.deepEqual(post.body.message_ids, [], 'no members for a notice runtime');
     assert.equal(post.body.launch_epoch, 'ep1');
     assert.ok(post.body.request_id, 'one request id per click');
+  });
+});
+
+test('PTY pane: unread tray goes from waiting to notified (Interrupt) when the bridge typed the notice, and leaves once read', async () => {
+  const hub: Hub = { transport: 'pty', posts: [], sendNowReply: { status: 200, body: { data: { outcome: 'delivered', batch: {
+    batch_id: 'b1', request_id: 'x', launch_epoch: 'ep1', attempt: 1, state: 'delivered', error: '', message_ids: [], excluded: [] } } } },
+    messages: [userRow('msg_p0', 0, null), agentRow('msg_pa', 1), userRow('msg_p1', 2, null, { read_at: '' }), userRow('msg_p2', 3, null, { read_at: '' })],
+    notifiedAt: at(2), // the notice was typed for msg_p1 only
+  };
+  await fixture(hub, async ({ q, wait, delivery }) => {
+    const state = () => q('conversation-unread')?.getAttribute('data-unread-state') ?? '';
+    await wait(() => state() === 'waiting', 'msg_p2 is newer than the last notice');
+    assert.match(q('conversation-queued-title')!.textContent || '', /Waiting for the current turn/);
+    assert.ok(q('conversation-queued-send-now'), 'Send now while waiting');
+    assert.equal(q('conversation-queued-interrupt'), null);
+    // The bridge typed the notice for both (agent_notice_typed): messages_delivery refetches send-now.
+    hub.notifiedAt = at(3);
+    await delivery([]);
+    await wait(() => state() === 'notified', 'notified after the typed notice');
+    assert.match(q('conversation-queued-title')!.textContent || '', /Agent notified, not read yet/);
+    assert.match(q('conversation-queued-status')!.textContent || '', /Agent notified, 2 messages not read yet/);
+    assert.equal(q('conversation-queued-send-now'), null, 'no Send now once notified');
+    const interrupt = q('conversation-queued-interrupt')!;
+    assert.equal(interrupt.textContent, 'Interrupt');
+    assert.equal(interrupt.getAttribute('aria-label'), "Interrupt the agent's current turn so it reads now");
+    assert.equal(interrupt.getAttribute('title'), "Interrupt the agent's current turn so it reads now");
+    // Interrupt is the same memberless Send now.
+    await act(async () => interrupt.click());
+    await wait(() => hub.posts.some((p) => p.path.endsWith('/send-now')), 'send-now posted');
+    const post = hub.posts.find((p) => p.path.endsWith('/send-now'))!;
+    assert.deepEqual(post.body.message_ids, []);
+    assert.equal(post.body.launch_epoch, 'ep1');
+    // The agent read them: they leave the tray as before.
+    for (const m of hub.messages) if (m.direction === 'user_to_agent') m.read_at = at(4);
+    await delivery([]);
+    await wait(() => q('conversation-unread') === null, 'tray gone once read');
   });
 });
 

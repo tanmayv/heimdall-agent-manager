@@ -150,6 +150,14 @@ now needs no batch members:
 - **Steer** (when the profile's `pty_delivery.can_steer` is on, the default) stops a
   running turn with the interrupt keys, or types without them at a trusted idle, then
   types the notice and submits. With `can_steer` off, steer becomes send now.
-- **UI:** unread PTY rows stay in the transcript; one "Send now" action above the
-  composer (`conversation-unread`, `conversation-queued-send-now`) asks the agent to read
-  them now.
+- **UI:** unread PTY rows stay in the transcript; one action above the composer
+  (`conversation-unread`) asks the agent to read them now. It has two states, keyed off
+  `send_now: "notice"` and `agent_notified_at` on GET send-now
+  (src/contracts/agent_notified.odin): while an unread message is newer than the last
+  typed notice it says "Waiting for the current turn" with **Send now**
+  (`conversation-queued-send-now`); once the bridge typed the unread notice it says
+  "Agent notified, not read yet" with **Interrupt** (`conversation-queued-interrupt`),
+  the same Send now request. The bridge reports `agent_notice_typed` only after the
+  shared inbox drain committed a typed batch with the unread notice; the Hub keeps one
+  monotonic `agent_notified_at` per conversation (migration 272), also stamped by a
+  delivered notice Send now. Read messages leave the tray as before.

@@ -181,10 +181,16 @@ export function QueuedMessages({
 /**
  * Send now for a runtime without members (GET send-now `send_now: "notice"`, PTY). The
  * agent reads its own conversation, so unread messages stay in the transcript and this
- * one action asks the agent to read them now (the current turn stops first).
+ * one action asks the agent to read them now (the current turn stops first). Two states:
+ * while any unread message is newer than the last typed notice (`notified < unread`) the
+ * bridge is still waiting for the current turn to end, so Send now is offered; once the
+ * bridge typed the notice for all of them the agent was notified and only has not read
+ * yet, so the same action is offered as Interrupt (it stops the turn so it reads now).
  */
-export function UnreadSendNow({ unread, phase, error, tooltip, localError, onSendNow, onRetry }: {
+export function UnreadSendNow({ unread, notified, phase, error, tooltip, localError, onSendNow, onRetry }: {
   unread: number;
+  /** How many of the unread messages the bridge already typed the unread notice for. */
+  notified: number;
   phase: 'idle' | 'pending' | 'failed';
   error: string;
   tooltip: string;
@@ -193,9 +199,11 @@ export function UnreadSendNow({ unread, phase, error, tooltip, localError, onSen
   onRetry: () => void;
 }) {
   if (!unread) return null;
-  const label = `${count(unread)} not read yet`;
+  const allNotified = notified >= unread;
+  const label = allNotified ? 'Agent notified, not read yet' : 'Waiting for the current turn';
+  const spoken = allNotified ? `Agent notified, ${count(unread)} not read yet` : `${count(unread)} waiting for the current turn`;
   let action: ReactNode;
-  let announcement = `${label}.`;
+  let announcement = `${spoken}.`;
   if (phase === 'pending') {
     announcement = `Asking the agent to read ${count(unread)} now.`;
     action = (
@@ -205,7 +213,7 @@ export function UnreadSendNow({ unread, phase, error, tooltip, localError, onSen
       </Button>
     );
   } else if (phase === 'failed') {
-    announcement = `${sendNowErrorText(error)} ${label}.`;
+    announcement = `${sendNowErrorText(error)} ${spoken}.`;
     action = (
       <Button size="sm" variant="ghost" data-debug-id="conversation-queued-retry"
         aria-label={`Retry asking the agent to read ${count(unread)} now`} title={tooltip}
@@ -213,8 +221,15 @@ export function UnreadSendNow({ unread, phase, error, tooltip, localError, onSen
         Retry
       </Button>
     );
+  } else if (allNotified && !localError) {
+    action = (
+      <Button size="sm" variant="ghost" data-debug-id="conversation-queued-interrupt"
+        aria-label={INTERRUPT_HINT} title={INTERRUPT_HINT} className={`${QUIET_ACTION} text-accent`} onClick={onSendNow}>
+        Interrupt
+      </Button>
+    );
   } else {
-    if (localError) announcement = `${localError} ${label}.`;
+    if (localError) announcement = `${localError} ${spoken}.`;
     action = (
       <Button size="sm" variant="ghost" data-debug-id="conversation-queued-send-now"
         aria-label={`Have the agent read ${unread === 1 ? 'the unread message' : `all ${unread} unread messages`} now`}
@@ -225,14 +240,17 @@ export function UnreadSendNow({ unread, phase, error, tooltip, localError, onSen
   }
   const failed = phase === 'failed' || (phase === 'idle' && Boolean(localError));
   return (
-    <section data-debug-id="conversation-unread" aria-label="Messages the agent has not read yet" className="mb-2">
+    <section data-debug-id="conversation-unread" data-unread-state={allNotified ? 'notified' : 'waiting'}
+      aria-label="Messages the agent has not read yet" className="mb-2">
       <span data-debug-id="conversation-queued-status" role="status" aria-live="polite" className="sr-only">{announcement}</span>
       <ol className="flex min-w-0 flex-col pl-[6px] pr-1">
         <GroupLabel debugId="conversation-queued-title" tone={failed ? 'danger' : 'faint'}
-          title={phase === 'failed' ? sendNowErrorText(error) : localError || tooltip} action={action}>
+          title={phase === 'failed' ? sendNowErrorText(error) : localError || spoken} action={action}>
           {failed ? <><Icon name="alert" size={12} className="shrink-0" />Not sent yet</> : label}
         </GroupLabel>
       </ol>
     </section>
   );
 }
+
+const INTERRUPT_HINT = "Interrupt the agent's current turn so it reads now";

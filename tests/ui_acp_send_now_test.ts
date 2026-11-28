@@ -11,13 +11,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
+import { readFileSync } from 'node:fs';
 import { JSDOM } from 'jsdom';
 import { makeVaultStore } from './helpers/vaultEndpointHarness.ts';
 import {
-  acpDeliveryLabel, noticeSendNowPhase, orderTranscript, parseAcpDelivery, parseSendNowState, placementFor, sendNowErrorText,
+  acpDeliveryLabel, noticeSendNowPhase, notifiedUnreadCount, orderTranscript, parseAcpDelivery, parseSendNowState, placementFor, sendNowErrorText,
   sendNowTooltip, trayView, unreadUserRows, type AcpDelivery, type SendNowBatch,
 } from '../src/ui/components/chat/acpDelivery.ts';
 import type { ChatMessage } from '../src/ui/components/chat/types.ts';
+import { SEND_NOW_AGENT_NOTIFIED_AT_FIELD, agentNotifiedUnixMs } from '../src/ui/api/agentNotified.ts';
 
 const T0 = Date.parse('2026-11-23T17:00:00Z');
 const iso = (sec: number) => new Date(T0 + sec * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
@@ -160,6 +162,28 @@ test('send-now state parsing and tooltip honesty', () => {
   assert.equal(parseSendNowState({ send_now: 'notice' }).sendNow, 'notice');
   assert.equal(parseSendNowState({ send_now: 'bogus' }).sendNow, '');
   assert.match(sendNowTooltip(null, 'notice'), /read its messages now/);
+  // When the agent was last notified (PTY unread tray); '' or junk = never.
+  assert.equal(s.agentNotifiedUnixMs, 0);
+  assert.equal(parseSendNowState({ agent_notified_at: '' }).agentNotifiedUnixMs, 0);
+  assert.equal(parseSendNowState({ agent_notified_at: 'nope' }).agentNotifiedUnixMs, 0);
+  assert.equal(parseSendNowState({ agent_notified_at: '2026-11-23T17:00:05Z' }).agentNotifiedUnixMs, Date.parse('2026-11-23T17:00:05Z'));
+});
+
+test('agent_notified_at: the TS mirror names the same field as the Odin contract', () => {
+  const contract = readFileSync(new URL('../src/contracts/agent_notified.odin', import.meta.url), 'utf8');
+  assert.match(contract, new RegExp(`SEND_NOW_AGENT_NOTIFIED_AT_FIELD :: "${SEND_NOW_AGENT_NOTIFIED_AT_FIELD}"`));
+  assert.equal(agentNotifiedUnixMs({ [SEND_NOW_AGENT_NOTIFIED_AT_FIELD]: '2026-01-01T00:00:30Z' }), Date.parse('2026-01-01T00:00:30Z'));
+  assert.equal(agentNotifiedUnixMs({}), 0, 'older hub');
+  assert.equal(agentNotifiedUnixMs(null), 0);
+});
+
+test('notice Send now (PTY): unread rows count as notified when created at or before the last notice', () => {
+  const rows = [user('p1', 1, null), user('p2', 2, null), user('p3', 3, null)];
+  const created = (i: number) => rows[i].createdUnixMs;
+  assert.equal(notifiedUnreadCount(rows, 0), 0, 'never notified');
+  assert.equal(notifiedUnreadCount(rows, created(0) - 1), 0);
+  assert.equal(notifiedUnreadCount(rows, created(1)), 2, 'inclusive');
+  assert.equal(notifiedUnreadCount(rows, created(2) + 1000), 3);
 });
 
 test('notice Send now (PTY): unread user rows and the batch phase', () => {

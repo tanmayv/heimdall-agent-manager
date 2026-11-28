@@ -48,6 +48,7 @@ import {
   acpDeliveryLabel,
   newSendNowRequestId,
   noticeSendNowPhase,
+  notifiedUnreadCount,
   orderTranscript,
   parseAcpDelivery,
   placementFor,
@@ -1517,10 +1518,13 @@ export function AgentChatPane({
   const hasAcpDelivery = useMemo(() => chatMessages.some((m) => m.acpDelivery), [chatMessages]);
   const sendNowQuery = useFetchSendNowStateQuery({ conversationId }, { skip: !conversationId });
   const sendNowKind = sendNowQuery.data?.sendNow ?? '';
-  const agentUnreadCount = useMemo(
-    () => (sendNowKind === 'notice' ? unreadUserRows(chatMessages).length : 0),
-    [chatMessages, sendNowKind],
-  );
+  const agentNotifiedUnixMs = sendNowQuery.data?.agentNotifiedUnixMs ?? 0;
+  // Unread rows, and how many of them the bridge already typed the unread notice for.
+  const { agentUnreadCount, agentNotifiedCount } = useMemo(() => {
+    if (sendNowKind !== 'notice') return { agentUnreadCount: 0, agentNotifiedCount: 0 };
+    const unread = unreadUserRows(chatMessages);
+    return { agentUnreadCount: unread.length, agentNotifiedCount: notifiedUnreadCount(unread, agentNotifiedUnixMs) };
+  }, [agentNotifiedUnixMs, chatMessages, sendNowKind]);
   const [sendNowRequest] = useSendNowMutation();
   const aboveComposerMessages = useMemo(
     () => (acpConversation || hasAcpDelivery ? chatMessages.filter((m) => placementFor(m, acpConversation) !== 'transcript') : []),
@@ -3896,6 +3900,7 @@ export function AgentChatPane({
               <div className="mx-auto w-full max-w-4xl">
                 <UnreadSendNow
                   unread={agentUnreadCount}
+                  notified={agentNotifiedCount}
                   phase={noticePhase}
                   error={(localBatch ?? serverBatch)?.error ?? ''}
                   tooltip={sendNowTooltip(null, 'notice')}

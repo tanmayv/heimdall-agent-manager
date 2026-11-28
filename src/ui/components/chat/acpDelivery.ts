@@ -15,6 +15,8 @@
  *   today's behaviour.
  */
 
+import { agentNotifiedUnixMs } from '../../api/agentNotified';
+
 export type AcpDeliveryStatus = 'sent' | 'queued' | 'delivered' | 'read' | 'not_delivered';
 
 export type AcpDelivery = {
@@ -162,6 +164,13 @@ export type SendNowState = {
   launchEpoch: string;
   steeringSupported: boolean | null;
   batch: SendNowBatch | null;
+  /**
+   * When the agent was last pointed at its unread messages (GET send-now
+   * `agent_notified_at`, src/ui/api/agentNotified.ts: the bridge typed the unread notice,
+   * or a notice Send now was delivered); 0 when never. Only meaningful for
+   * `sendNow === 'notice'`.
+   */
+  agentNotifiedUnixMs: number;
 };
 
 export function parseSendNowBatch(raw: any): SendNowBatch | null {
@@ -186,6 +195,7 @@ export function parseSendNowState(raw: any): SendNowState {
     launchEpoch: String(raw?.launch_epoch ?? ''),
     steeringSupported: steering === true ? true : steering === false ? false : null,
     batch: parseSendNowBatch(raw?.batch),
+    agentNotifiedUnixMs: agentNotifiedUnixMs(raw),
   };
 }
 
@@ -240,6 +250,15 @@ export function trayView<T extends DeliveryRow>(
  */
 export function unreadUserRows<T extends DeliveryRow & { readUnixMs: number }>(rows: readonly T[]): T[] {
   return rows.filter((row) => row.isUser && !row.acpDelivery && !row.sending && row.deliveryFailedUnixMs <= 0 && row.readUnixMs <= 0);
+}
+
+/**
+ * How many unread rows (unreadUserRows) the agent has already been notified about: a row
+ * counts once it was created at or before the last notice (`agentNotifiedUnixMs`).
+ */
+export function notifiedUnreadCount<T extends { createdUnixMs: number }>(unread: readonly T[], agentNotifiedUnixMs: number): number {
+  if (agentNotifiedUnixMs <= 0) return 0;
+  return unread.filter((row) => row.createdUnixMs > 0 && row.createdUnixMs <= agentNotifiedUnixMs).length;
 }
 
 /** The phase of the latest memberless Send now: in flight, failed or settled. */
