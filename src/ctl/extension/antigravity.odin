@@ -63,7 +63,8 @@ antigravity_hook_from_name :: proc(name: string) -> Antigravity_Hook {
 	return .Unknown
 }
 
-// ANTIGRAVITY_UNGATED_TOOLS (canonical snake_case names) are the tools agy may
+// ANTIGRAVITY_UNGATED_TOOLS (exact native snake_case names, see
+// antigravity_tool_canonical) are the tools agy may
 // run in permission_mode "ask" without a relay. A name is listed only when it
 // is a read-only native agy tool named in the repo's Antigravity sources (the
 // captures in src/ctl/extension/testdata/antigravity and the tool list in
@@ -395,19 +396,24 @@ antigravity_map_hook :: proc(raw, ts: string, permission_timeout_ms := 0, permis
 	return hook_mapped_bounded(out)
 }
 
-// antigravity_tool_canonical folds agy's camelCase / PascalCase tool name
-// spellings (runCommand, InvokeSubagent) to the snake_case name.
+// ANTIGRAVITY_NATIVE_TOOL_ALIASES are the other spellings of native agy tools
+// (REQ-EXT-AGY-4 tool list in docs/plans/antigravity-provider-extension.md)
+// that the adapter has always accepted: the pre-R6 adapter matched exactly
+// these. There is no generic camelCase fold, so a third-party (MCP) tool keeps
+// its exact name and one called viewFile never matches view_file.
+ANTIGRAVITY_NATIVE_TOOL_ALIASES :: [?][2]string{
+	{"runCommand", "run_command"},
+	{"writeToFile", "write_to_file"},
+	{"replaceFileContent", "replace_file_content"},
+	{"invokeSubagent", "invoke_subagent"},
+	{"InvokeSubagent", "invoke_subagent"},
+}
+
+// antigravity_tool_canonical returns the snake_case name for a native alias
+// (ANTIGRAVITY_NATIVE_TOOL_ALIASES) and any other name unchanged.
 antigravity_tool_canonical :: proc(name: string) -> string {
-	b := strings.builder_make(context.temp_allocator)
-	for i in 0..<len(name) {
-		c := name[i]
-		if c >= 'A' && c <= 'Z' {
-			if i > 0 && name[i-1] != '_' do strings.write_byte(&b, '_')
-			c += 'a' - 'A'
-		}
-		strings.write_byte(&b, c)
-	}
-	return strings.to_string(b)
+	for alias in ANTIGRAVITY_NATIVE_TOOL_ALIASES do if name == alias[0] do return alias[1]
+	return name
 }
 
 antigravity_tool_is :: proc(tool_name, canonical: string) -> bool {

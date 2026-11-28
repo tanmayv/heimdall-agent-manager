@@ -1068,11 +1068,21 @@ test_antigravity_ask_mode_gates_every_tool_but_reads :: proc(t: ^testing.T) {
 			testing.expect_value(t, ev.kind, contracts.Ext_Event_Kind.Permission_Request)
 		}
 	}
-	for tool in ([]string{"view_file", "viewFile"}) {
+	for tool in ([]string{"view_file"}) {
 		mapped, err := antigravity_map_hook(pre(tool), TS)
 		testing.expect_value(t, err, Hook_Error.None)
 		testing.expectf(t, !mapped.is_permission, "%s is not gated", tool)
 	}
+	// N2: only native agy names are canonicalised. A third-party (MCP) tool
+	// spelled like a native read keeps its own name and is gated.
+	for tool in ([]string{"viewFile", "ViewFile", "VIEW_FILE", "mcp_view_file"}) {
+		mapped, err := antigravity_map_hook(pre(tool), TS)
+		testing.expect_value(t, err, Hook_Error.None)
+		testing.expectf(t, mapped.is_permission, "%s must be gated in ask mode", tool)
+	}
+	testing.expect_value(t, antigravity_tool_canonical("viewFile"), "viewFile")
+	testing.expect_value(t, antigravity_tool_canonical("runCommand"), "run_command")
+	testing.expect_value(t, antigravity_tool_canonical("InvokeSubagent"), "invoke_subagent")
 	// N1: a payload without a tool name is not known to be a read: it asks.
 	testing.expect(t, antigravity_tool_needs_permission(""))
 	testing.expect(t, antigravity_tool_needs_permission("  "))
