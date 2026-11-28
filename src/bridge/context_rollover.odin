@@ -749,7 +749,8 @@ bridge_rollover_restart_default :: proc(instance_id: string, run_count: int) -> 
 	}
 	// The Hub's one lifecycle path stops this session and starts a fresh one
 	// with the instance's own runtime (restart_instance, reason context_rollover).
-	body := fmt.tprintf(`{"expected_run_count":%d,"reason":"context_rollover"}`, run_count)
+	// Odin's fmt reads a bare { as an argument index: the braces are doubled.
+	body := fmt.tprintf(`{{"expected_run_count":%d,"reason":"context_rollover"}}`, run_count)
 	relay := bridge_local_relay_raw(route.http_method, route.path, route.query, body, rec)
 	if !relay.ok || relay.status < 200 || relay.status >= 300 do fmt.println("bridge context rollover: hub restart refused", instance_id, relay.status)
 	return relay.ok && relay.status >= 200 && relay.status < 300
