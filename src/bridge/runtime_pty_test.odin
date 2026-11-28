@@ -509,11 +509,14 @@ runtime_activity_transitions_emit_turn_events :: proc(t: ^testing.T) {
 @(test)
 runtime_interface_is_narrow_and_inbox_driven :: proc(t: ^testing.T) {
 	names := reflect.struct_field_names(Agent_Runtime)
-	want := []string{"transport", "submit", "send_now", "interrupt", "stop", "can_steer", "usage", "inputs_read", "release", "child_exited", "raw_input"}
+	want := []string{"transport", "submit", "send_now", "interrupt", "stop", "can_steer", "usage", "inputs_read", "release", "child_exited", "raw_input", "context_sources", "compact", "handoff_request"}
 	testing.expect_value(t, len(names), len(want))
 	for n in want do testing.expect(t, slice.contains(names, n), n)
 	for rt in bridge_agent_runtime_list() {
 		testing.expect(t, rt.submit != nil && rt.send_now != nil && rt.interrupt != nil && rt.can_steer != nil && rt.usage != nil, rt.transport)
+		// Context policy: each runtime names its signal sources and frees
+		// context either natively (compact) or by a rollover (handoff_request).
+		testing.expect(t, rt.context_sources != {} && (rt.compact != nil || rt.handoff_request != nil), rt.transport)
 	}
 	testing.expect(t, pty_inbox_target.transport == pty_agent_runtime.transport)
 	testing.expect(t, bridge_inbox_target("inst_runtime_never_seen") == nil, "no runtime, no delivery")
