@@ -147,9 +147,18 @@ export type SendNowBatch = {
   messageIds: string[];
 };
 
+/**
+ * What Send now takes for this conversation's runtime (GET send-now `send_now`, declared
+ * by the Hub per runtime): `members` sends the turn-held tray snapshot (ACP); `notice`
+ * sends no members and the agent is asked to read its unread messages now (PTY); `''`
+ * means no Send now.
+ */
+export type SendNowKind = 'members' | 'notice' | '';
+
 export type SendNowState = {
   conversationId: string;
   runtimeTransport: string;
+  sendNow: SendNowKind;
   launchEpoch: string;
   steeringSupported: boolean | null;
   batch: SendNowBatch | null;
@@ -173,6 +182,7 @@ export function parseSendNowState(raw: any): SendNowState {
   return {
     conversationId: String(raw?.conversation_id ?? ''),
     runtimeTransport: String(raw?.runtime_transport ?? ''),
+    sendNow: raw?.send_now === 'members' || raw?.send_now === 'notice' ? raw.send_now : '',
     launchEpoch: String(raw?.launch_epoch ?? ''),
     steeringSupported: steering === true ? true : steering === false ? false : null,
     batch: parseSendNowBatch(raw?.batch),
@@ -223,6 +233,22 @@ export function trayView<T extends DeliveryRow>(
   };
 }
 
+/**
+ * User rows the agent has not read yet in a `notice` conversation (PTY): saved, not
+ * failed, no read evidence. They stay in the transcript; Send now only asks the agent to
+ * read them now.
+ */
+export function unreadUserRows<T extends DeliveryRow & { readUnixMs: number }>(rows: readonly T[]): T[] {
+  return rows.filter((row) => row.isUser && !row.acpDelivery && !row.sending && row.deliveryFailedUnixMs <= 0 && row.readUnixMs <= 0);
+}
+
+/** The phase of the latest memberless Send now: in flight, failed or settled. */
+export function noticeSendNowPhase(batch: SendNowBatch | null): 'idle' | 'pending' | 'failed' {
+  if (!batch) return 'idle';
+  if (BATCH_IN_FLIGHT.has(batch.state)) return 'pending';
+  return batch.state === 'failed' ? 'failed' : 'idle';
+}
+
 export function sendNowErrorText(error: string): string {
   switch (error) {
     case 'cancel_timeout': return "Couldn't stop the current turn in time. Still waiting.";
@@ -230,12 +256,14 @@ export function sendNowErrorText(error: string): string {
     case 'agent_stopped': return 'The agent stopped. Still waiting.';
     case 'bridge_offline': return "The agent's bridge is offline. Still waiting.";
     case 'bridge_no_response': return "The agent's bridge did not respond. Still waiting.";
+    case 'send_failed': return "The agent's terminal did not take it. Still waiting.";
     case 'stale_epoch': return 'The agent restarted. Still waiting.';
     default: return "Couldn't send now. Still waiting.";
   }
 }
 
-export function sendNowTooltip(steeringSupported: boolean | null): string {
+export function sendNowTooltip(steeringSupported: boolean | null, kind: SendNowKind = 'members'): string {
+  if (kind === 'notice') return 'Stop the current turn and have the agent read its messages now';
   if (steeringSupported === true) return 'Add them to the current turn now';
   if (steeringSupported === false) return 'Stop the current turn and send them now';
   return 'Send them now: added to the current turn, or the current turn stops first';

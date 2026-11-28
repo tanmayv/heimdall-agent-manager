@@ -14,8 +14,8 @@ import { createRoot } from 'react-dom/client';
 import { JSDOM } from 'jsdom';
 import { makeVaultStore } from './helpers/vaultEndpointHarness.ts';
 import {
-  acpDeliveryLabel, orderTranscript, parseAcpDelivery, parseSendNowState, placementFor, sendNowErrorText,
-  sendNowTooltip, trayView, type AcpDelivery, type SendNowBatch,
+  acpDeliveryLabel, noticeSendNowPhase, orderTranscript, parseAcpDelivery, parseSendNowState, placementFor, sendNowErrorText,
+  sendNowTooltip, trayView, unreadUserRows, type AcpDelivery, type SendNowBatch,
 } from '../src/ui/components/chat/acpDelivery.ts';
 import type { ChatMessage } from '../src/ui/components/chat/types.ts';
 
@@ -154,6 +154,26 @@ test('send-now state parsing and tooltip honesty', () => {
   assert.match(sendNowTooltip(true), /current turn/);
   assert.match(sendNowTooltip(false), /Stop the current turn/);
   assert.match(sendNowTooltip(null), /or the current turn stops first/);
+  // The runtime's declared Send now capability (members / notice / none).
+  assert.equal(s.sendNow, '');
+  assert.equal(parseSendNowState({ send_now: 'members' }).sendNow, 'members');
+  assert.equal(parseSendNowState({ send_now: 'notice' }).sendNow, 'notice');
+  assert.equal(parseSendNowState({ send_now: 'bogus' }).sendNow, '');
+  assert.match(sendNowTooltip(null, 'notice'), /read its messages now/);
+});
+
+test('notice Send now (PTY): unread user rows and the batch phase', () => {
+  const rows = [
+    user('p1', 1, null), user('p2', 2, null, { readUnixMs: T0 + 5000 }), user('p3', 3, null, { sending: true }),
+    user('p4', 4, null, { deliveryFailedUnixMs: T0 }), agent('a1', 5), user('p5', 6, held()),
+  ];
+  assert.deepEqual(unreadUserRows(rows).map((r) => r.messageId), ['p1'], 'saved, unread, not ACP-tracked');
+  const b = (state: string) => ({ batchId: 'b', requestId: 'r', launchEpoch: 'ep', attempt: 1, state, error: '', messageIds: [] });
+  assert.equal(noticeSendNowPhase(null), 'idle');
+  for (const state of ['pending', 'sent', 'dispatching']) assert.equal(noticeSendNowPhase(b(state)), 'pending');
+  assert.equal(noticeSendNowPhase(b('failed')), 'failed');
+  for (const state of ['delivered', 'empty']) assert.equal(noticeSendNowPhase(b(state)), 'idle');
+  assert.match(sendNowErrorText('send_failed'), /terminal did not take it/);
 });
 
 function fakeResponse(status: number, body: any) {

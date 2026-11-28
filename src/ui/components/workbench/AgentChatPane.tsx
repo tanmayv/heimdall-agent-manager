@@ -43,16 +43,18 @@ import {
   useFetchSendNowStateQuery,
   useSendNowMutation,
 } from '../../api/endpoints/chats';
-import { QueuedMessages } from '../chat/QueuedMessages';
+import { QueuedMessages, UnreadSendNow } from '../chat/QueuedMessages';
 import {
   acpDeliveryLabel,
   newSendNowRequestId,
+  noticeSendNowPhase,
   orderTranscript,
   parseAcpDelivery,
   placementFor,
   sendNowErrorText,
   sendNowTooltip,
   trayView,
+  unreadUserRows,
   type SendNowBatch,
 } from '../chat/acpDelivery';
 import {
@@ -1507,10 +1509,18 @@ export function AgentChatPane({
 
   // ACP delivery (docs/acp-send-now.md). User messages the agent has not received yet
   // wait above the composer (QueuedMessages); only delivered/read rows (and failures)
-  // are in the transcript, placed causally. PTY/non-ACP conversations are unchanged.
+  // are in the transcript, placed causally. PTY/non-ACP conversations keep their transcript.
+  // Whether and how Send now works is the runtime's declared capability (send-now
+  // `send_now`): `members` is the tray above; `notice` (PTY) asks the agent to read its
+  // unread messages now.
   const acpConversation = instance?.runtime_transport === 'acp';
   const hasAcpDelivery = useMemo(() => chatMessages.some((m) => m.acpDelivery), [chatMessages]);
-  const sendNowQuery = useFetchSendNowStateQuery({ conversationId }, { skip: !conversationId || !(acpConversation || hasAcpDelivery) });
+  const sendNowQuery = useFetchSendNowStateQuery({ conversationId }, { skip: !conversationId });
+  const sendNowKind = sendNowQuery.data?.sendNow ?? '';
+  const agentUnreadCount = useMemo(
+    () => (sendNowKind === 'notice' ? unreadUserRows(chatMessages).length : 0),
+    [chatMessages, sendNowKind],
+  );
   const [sendNowRequest] = useSendNowMutation();
   const aboveComposerMessages = useMemo(
     () => (acpConversation || hasAcpDelivery ? chatMessages.filter((m) => placementFor(m, acpConversation) !== 'transcript') : []),
@@ -1547,8 +1557,8 @@ export function AgentChatPane({
   );
   const sendNowLocalError = sendNowError && sendNowError.conversationId === conversationId ? sendNowError.text : '';
   useEffect(() => {
-    if (sendNowLocalError && queuedView.waiting.length === 0 && queuedView.batch.length === 0) setSendNowError(null);
-  }, [queuedView.batch.length, queuedView.waiting.length, sendNowLocalError]);
+    if (sendNowLocalError && queuedView.waiting.length === 0 && queuedView.batch.length === 0 && agentUnreadCount === 0) setSendNowError(null);
+  }, [agentUnreadCount, queuedView.batch.length, queuedView.waiting.length, sendNowLocalError]);
   const postSendNow = useCallback(async (batch: SendNowBatch) => {
     if (!conversationId) return;
     const target = conversationId;
@@ -1579,6 +1589,14 @@ export function AgentChatPane({
     const batch = localBatch ?? serverBatch;
     if (batch && batch.state === 'failed') void postSendNow(batch);
   }, [localBatch, postSendNow, serverBatch]);
+  // A runtime without members (PTY): one action over the unread rows, no snapshot.
+  const noticePhase = noticeSendNowPhase(localBatch ?? serverBatch);
+  const handleNoticeSendNow = useCallback(() => {
+    void postSendNow({
+      batchId: '', requestId: newSendNowRequestId(), attempt: 0, state: 'pending', error: '', messageIds: [],
+      launchEpoch: sendNowQuery.data?.launchEpoch || String((instance as any)?.launch_epoch || ''),
+    });
+  }, [instance, postSendNow, sendNowQuery.data?.launchEpoch]);
 
   // REQ-PIN-1 for delivery: a message this mount showed above the composer plays the
   // send animation once, from its own bubble, when it enters the transcript. Keys are
@@ -3870,6 +3888,20 @@ export function AgentChatPane({
                   onRetry={handleSendNowRetry}
                   renderBody={(message) => renderConversationMessageBody(message)}
                   bubbleRef={queuedBubbleRef}
+                />
+              </div>
+            </div>
+          ) : agentUnreadCount ? (
+            <div className="mx-auto w-full max-w-[calc(56rem+1.5rem)] px-3 pt-2">
+              <div className="mx-auto w-full max-w-4xl">
+                <UnreadSendNow
+                  unread={agentUnreadCount}
+                  phase={noticePhase}
+                  error={(localBatch ?? serverBatch)?.error ?? ''}
+                  tooltip={sendNowTooltip(null, 'notice')}
+                  localError={sendNowLocalError}
+                  onSendNow={handleNoticeSendNow}
+                  onRetry={handleSendNowRetry}
                 />
               </div>
             </div>

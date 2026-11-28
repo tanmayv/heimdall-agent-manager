@@ -177,3 +177,62 @@ export function QueuedMessages({
     </section>
   );
 }
+
+/**
+ * Send now for a runtime without members (GET send-now `send_now: "notice"`, PTY). The
+ * agent reads its own conversation, so unread messages stay in the transcript and this
+ * one action asks the agent to read them now (the current turn stops first).
+ */
+export function UnreadSendNow({ unread, phase, error, tooltip, localError, onSendNow, onRetry }: {
+  unread: number;
+  phase: 'idle' | 'pending' | 'failed';
+  error: string;
+  tooltip: string;
+  localError: string;
+  onSendNow: () => void;
+  onRetry: () => void;
+}) {
+  if (!unread) return null;
+  const label = `${count(unread)} not read yet`;
+  let action: ReactNode;
+  let announcement = `${label}.`;
+  if (phase === 'pending') {
+    announcement = `Asking the agent to read ${count(unread)} now.`;
+    action = (
+      <Button size="sm" variant="ghost" data-debug-id="conversation-queued-send-now" loading
+        aria-label={announcement} className={`${QUIET_ACTION} text-muted`}>
+        Sending…
+      </Button>
+    );
+  } else if (phase === 'failed') {
+    announcement = `${sendNowErrorText(error)} ${label}.`;
+    action = (
+      <Button size="sm" variant="ghost" data-debug-id="conversation-queued-retry"
+        aria-label={`Retry asking the agent to read ${count(unread)} now`} title={tooltip}
+        className={`${QUIET_ACTION} text-danger`} leading={<Icon name="refresh" size={12} />} onClick={onRetry}>
+        Retry
+      </Button>
+    );
+  } else {
+    if (localError) announcement = `${localError} ${label}.`;
+    action = (
+      <Button size="sm" variant="ghost" data-debug-id="conversation-queued-send-now"
+        aria-label={`Have the agent read ${unread === 1 ? 'the unread message' : `all ${unread} unread messages`} now`}
+        title={tooltip} className={`${QUIET_ACTION} text-accent`} onClick={onSendNow}>
+        Send now
+      </Button>
+    );
+  }
+  const failed = phase === 'failed' || (phase === 'idle' && Boolean(localError));
+  return (
+    <section data-debug-id="conversation-unread" aria-label="Messages the agent has not read yet" className="mb-2">
+      <span data-debug-id="conversation-queued-status" role="status" aria-live="polite" className="sr-only">{announcement}</span>
+      <ol className="flex min-w-0 flex-col pl-[6px] pr-1">
+        <GroupLabel debugId="conversation-queued-title" tone={failed ? 'danger' : 'faint'}
+          title={phase === 'failed' ? sendNowErrorText(error) : localError || tooltip} action={action}>
+          {failed ? <><Icon name="alert" size={12} className="shrink-0" />Not sent yet</> : label}
+        </GroupLabel>
+      </ol>
+    </section>
+  );
+}

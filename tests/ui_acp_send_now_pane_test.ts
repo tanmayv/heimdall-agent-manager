@@ -19,7 +19,7 @@ import { unlockVault, clearActiveKey } from './helpers/vaultEndpointHarness.ts';
 // stays above the composer until the agent gets it; a delivered/read row enters the
 // transcript once, with the send animation only when this mount saw it waiting; reloads
 // and refetches never replay it or duplicate it; Send now posts ONE FIFO snapshot with the
-// instance epoch; PTY conversations are unchanged.
+// instance epoch; PTY conversations keep their transcript and get a memberless Send now.
 //
 // RUN: node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_acp_send_now_pane_test.ts
 
@@ -103,7 +103,7 @@ async function fixture(hub: Hub, run: (ctx: any) => Promise<void>) {
     if (path.endsWith('/me/experiments') && hub.experiments) data = { experiments: hub.experiments };
     else if (path.includes('/chats/by-instance/')) data = { conversation_id: 'workerchat', agent_instance_id: 'worker', agent_id: 'worker-identity', runtime_status: 'running' };
     else if (path.endsWith('/messages')) data = [...hub.messages].reverse();
-    else if (path.endsWith('/send-now')) data = { conversation_id: 'workerchat', runtime_transport: hub.transport, launch_epoch: 'ep1', steering_supported: false,
+    else if (path.endsWith('/send-now')) data = { conversation_id: 'workerchat', runtime_transport: hub.transport, send_now: hub.transport === 'acp' ? 'members' : 'notice', launch_epoch: 'ep1', steering_supported: false,
       batch: hub.posts.some((p) => p.path.endsWith('/send-now')) ? hub.sendNowReply.body?.data?.batch ?? null : null };
     else if (/\/agent-instances\/[^/]+$/.test(path)) data = { agent_instance_id: 'worker', agent_id: 'identity', provider: 'claude', model: 'opus', bridge_id: 'b',
       runtime_status: 'running', runtime_transport: hub.transport, launch_epoch: 'ep1', configuration_revision: 7 };
@@ -291,18 +291,24 @@ test('ACP pane: a reload shows delivered history in place and never replays the 
   });
 });
 
-test('PTY pane: unchanged (no send-now request, read_at still means Read)', async () => {
-  const hub: Hub = { transport: 'pty', posts: [], sendNowReply: { status: 409, body: {} }, messages: [
-    userRow('msg_p0', 0, null), agentRow('msg_pa', 1),
-  ] };
-  hub.gets = [];
+test('PTY pane: transcript unchanged; Send now asks the agent to read its unread messages (no members)', async () => {
+  const hub: Hub = { transport: 'pty', posts: [], sendNowReply: { status: 200, body: { data: { outcome: 'delivered', batch: {
+    batch_id: 'b1', request_id: 'x', launch_epoch: 'ep1', attempt: 1, state: 'delivered', error: '', message_ids: [], excluded: [] } } } },
+    messages: [userRow('msg_p0', 0, null), agentRow('msg_pa', 1), userRow('msg_p1', 2, null, { read_at: '' }), userRow('msg_p2', 3, null, { read_at: '' })],
+  };
   await fixture(hub, async ({ q, wait, transcriptIds, queuedIds }) => {
-    await wait(() => transcriptIds().length === 2, 'history rendered');
-    await act(async () => { await new Promise(r => setTimeout(r, 40)); });
-    assert.equal(queuedIds().length, 0);
+    await wait(() => transcriptIds().length === 4, 'history rendered');
+    assert.equal(queuedIds().length, 0, 'unread PTY rows stay in the transcript');
     assert.match(q('conversation-thread-message-msg_p0-status')?.textContent || '', /Read/, 'legacy read_at semantics kept');
+    await wait(() => Boolean(q('conversation-queued-send-now')), 'Send now offered by the runtime capability');
+    assert.match(q('conversation-queued-title')!.textContent || '', /2 messages not read yet/);
+    await act(async () => q('conversation-queued-send-now')!.click());
+    await wait(() => hub.posts.some((p) => p.path.endsWith('/send-now')), 'send-now posted');
+    const post = hub.posts.find((p) => p.path.endsWith('/send-now'))!;
+    assert.deepEqual(post.body.message_ids, [], 'no members for a notice runtime');
+    assert.equal(post.body.launch_epoch, 'ep1');
+    assert.ok(post.body.request_id, 'one request id per click');
   });
-  assert.deepEqual(hub.gets.filter((p) => p.includes('/send-now')), [], 'no Send now request for PTY');
 });
 
 test('ACP pane: a failed batch says so and Retry reuses its request_id for the members still waiting', async () => {
