@@ -5,7 +5,6 @@ import contracts "odin_test:contracts"
 import "base:runtime"
 import "core:encoding/json"
 import "core:fmt"
-import "core:mem"
 import "core:os"
 import "core:strings"
 import "core:sync"
@@ -96,51 +95,37 @@ t4_acp_config_exact_grouped_selection_and_modes :: proc(t: ^testing.T) {
     wrong, returned := acp_config_selection(T4_CONFIG, "mode", "bypassPermissions", true); delete(wrong); testing.expect(t, !returned)
 }
 
+// G12/G9: every transport gets the same bootstrap, including the rule that a
+// reply is an explicit `chat send`. ACP assistant text is only a live stream.
 @(test)
-t4_acp_bootstrap_replaces_chat_send_preserves_tasks :: proc(t: ^testing.T) {
+g12_bootstrap_chat_send_reply_rule_is_transport_independent :: proc(t: ^testing.T) {
     context.allocator = context.temp_allocator
-    input := strings.concatenate({"TASK.md\nMEMORY.md\n", acp_bootstrap_communication_marker, " ...\nALWAYS reply with `chat send`.\n\nNext section\n"}); defer delete(input)
-    output := bridge_bootstrap_acp_instructions(input); defer delete(output)
-    testing.expect(t, strings.contains(output, "session prompts") && strings.contains(output, "natural assistant text"))
-    testing.expect(t, !strings.contains(output, "ALWAYS reply with"))
-    testing.expect(t, strings.contains(output, "TASK.md") && strings.contains(output, "MEMORY.md") && strings.contains(output, "heimdall-acp-bootstrap-v1") && strings.contains(output, "Next section"))
-    d := bridge_bootstrap_descriptor_from_launch(`{"payload":{"agent_instance_id":"inst_t4","effective_transport":"acp"}}`)
-    testing.expect_value(t, d.effective_transport, "acp")
-}
-
-// Guard: render the REAL bootstrap frame, not the replace constant. T4 reworded
-// the paragraph in bootstrap_agents.md and the exact-string replace silently
-// stopped matching; this fails if the frame and the replace ever drift again.
-@(test)
-t7_acp_bootstrap_real_frame_drops_pty_reply_rule :: proc(t: ^testing.T) {
-    context.allocator = context.temp_allocator
-    frame := string(#load("../prompts/bootstrap_agents.md", string))
-    testing.expect(t, strings.contains(frame, "ALWAYS reply with"), "frame no longer holds the PTY rule; update this test")
-    output := bridge_bootstrap_acp_instructions(frame)
-    testing.expect(t, !strings.contains(output, "ALWAYS reply with"), "PTY reply rule survived ACP rewrite")
-    testing.expect(t, !strings.contains(output, "chat send --to user --body \"<your reply>\""))
-    testing.expect(t, strings.contains(output, "Your natural assistant text reaches user chat automatically"))
-    testing.expect(t, strings.contains(output, "Do not echo ordinary answers with chat send"))
-    // Rewrite stops at the paragraph: following sections stay intact.
-    testing.expect(t, strings.contains(output, "### Response format: ALWAYS use Markdown (REQUIRED)"))
-    testing.expect(t, strings.contains(output, "## Communicating with the user (REQUIRED)"))
-    testing.expect_value(t, strings.count(output, "Your natural assistant text reaches user chat automatically"), 2) // inline + v1 trailer
-}
-
-// A template without the chat-send paragraph (e.g. a bot) must not free the
-// caller's body, which the caller frees afterwards (double free on launch).
-@(test)
-t4_acp_bootstrap_without_chat_send_keeps_caller_body :: proc(t: ^testing.T) {
-    track: mem.Tracking_Allocator
-    mem.tracking_allocator_init(&track, context.allocator); defer mem.tracking_allocator_destroy(&track)
-    context.allocator = mem.tracking_allocator(&track)
-    input := strings.clone("# Bot bootstrap\nNo chat-send guidance here.\n")
-    output := bridge_bootstrap_acp_instructions(input)
-    delete(input)
-    testing.expect(t, strings.has_prefix(output, "# Bot bootstrap\nNo chat-send guidance here.\n"))
-    testing.expect(t, strings.contains(output, "heimdall-acp-bootstrap-v1"))
-    delete(output)
-    testing.expect_value(t, len(track.bad_free_array), 0)
+    tpl := string(#load("../prompts/bootstrap_agents.md", string))
+    tpl_hash := test_bootstrap_sha256(tpl); defer delete(tpl_hash)
+    manifest := strings.concatenate({`{"protocol":2,"version":"v1","agent_id":"agt_1","files":[{"kind":"AGENTS_MD","relative_path":"AGENTS.md","assembly":[]}],"template":{"kind":"AGENTS_TEMPLATE","hash":"`, tpl_hash, `"},"variables":[]}`})
+    defer delete(manifest)
+    sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+    prev, had := os.lookup_env("HEIMDALL_HAM_CTL_BIN", context.allocator)
+    defer { if had do _ = os.set_env("HEIMDALL_HAM_CTL_BIN", prev); else do os.unset_env("HEIMDALL_HAM_CTL_BIN"); delete(prev) }
+    _ = os.set_env("HEIMDALL_HAM_CTL_BIN", "/bin/sh")
+    cache: Bootstrap_Cache
+    dir := fmt.tprintf("/tmp/ham-test-g12-bootstrap-%d", os.get_pid())
+    _ = os.remove_all(dir); defer _ = os.remove_all(dir)
+    bootstrap_cache_init(&cache, dir, 4 * 1024 * 1024)
+    bootstrap_cache_put(&cache, tpl_hash, tpl)
+    rendered: [2]string
+    for transport, i in ([]string{"pty", "acp"}) {
+        d := bridge_bootstrap_descriptor_from_launch(fmt.tprintf(`{{"payload":{{"agent_instance_id":"inst_g12","agent_name":"Agent","role":"worker","effective_transport":"%s"}}}}`, transport))
+        files, res := bridge_bootstrap_build_file_set(manifest, d, "unix:/tmp/test.sock", "tok", "claude", &cache)
+        defer bridge_bootstrap_free_file_set(files)
+        testing.expect(t, res.ok, res.detail)
+        for f in files do if f.kind == "AGENTS_MD" do rendered[i] = strings.clone(f.content, context.temp_allocator)
+    }
+    for body, i in rendered {
+        testing.expectf(t, strings.contains(body, "ALWAYS reply with") && strings.contains(body, "chat send --to user --body"), "transport %d lacks the chat-send reply rule", i)
+        testing.expect(t, !strings.contains(body, "reaches user chat automatically"), "no transport may claim auto-captured replies")
+    }
+    testing.expect(t, rendered[0] != "" && rendered[0] == rendered[1], "ACP and PTY bootstraps must be identical")
 }
 
 T4_Runtime_Test :: struct { r: ^ACP_Runtime, f: ACP_Test }

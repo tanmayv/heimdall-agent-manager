@@ -27,9 +27,9 @@ This agent is associated with a project. You run in your own managed working dir
 - Description: Enterprise multi-agent orchestrator.
 
 ## Communicating with the user (REQUIRED)
-Messages from the user arrive through Heimdall, NOT your terminal. Read them with
-`./bin/ham-ctl chat read`; ALWAYS reply with
-`./bin/ham-ctl chat send --to user --body "<your reply>"`. Terminal output is never delivered to the user. Load the `heimdall-ctl-communication` skill for the full messaging workflow (agent-to-agent messages).
+Messages from the user arrive through Heimdall, NOT your terminal: as a notice to read with
+`./bin/ham-ctl chat read`, or in full in your prompt. ALWAYS reply with
+`./bin/ham-ctl chat send --to user --body "<your reply>"`, on every transport. Terminal and assistant output is never delivered to the user as a message. Load the `heimdall-ctl-communication` skill for the full messaging workflow (agent-to-agent messages).
 
 ### Response format: ALWAYS use Markdown (REQUIRED)
 Write every chat message to the user in clean GitHub-flavored Markdown: structured headings, bullets and tables; fenced code blocks with a language for commands, snippets, diffs, configuration and logs; backticked code spans for commands, flags, filenames and IDs; never an unformatted wall of text.

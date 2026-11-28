@@ -386,7 +386,6 @@ bootstrap_global_cache: Bootstrap_Cache
 // bridge injects locally into the AGENTS.md header + ctl shim, so the bridge never
 // queries hub chains/agents tables for this.
 Bridge_Bootstrap_Descriptor :: struct {
-	effective_transport:      string,
 	instance_id:              string,
 	agent_id:                 string,
 	agent_name:               string,
@@ -410,7 +409,6 @@ bridge_bootstrap_descriptor_from_launch :: proc(command_json: string) -> Bridge_
 	payload := bridge_provider_payload_object(command_json)
 	pack_obj, _ := bridge_provider_json_extract_object(payload, "pack")
 	d := Bridge_Bootstrap_Descriptor{
-		effective_transport      = bridge_provider_json_extract_string(payload, "effective_transport", "pty"),
 		instance_id              = bridge_provider_json_extract_string(payload, "agent_instance_id", ""),
 		agent_id                 = bridge_provider_json_extract_string(payload, "agent_id", ""),
 		agent_name               = bridge_provider_json_extract_string(payload, "agent_name", ""),
@@ -893,11 +891,8 @@ bridge_bootstrap_build_file_set :: proc(manifest_json: string, d: Bridge_Bootstr
 	// Decrypt each file's content here, the one point every bootstrap file passes
 	// through, so the agent never reads raw ciphertext.
 	agents_md = bridge_bootstrap_decrypt_owned(agents_md)
-	if d.effective_transport == "acp" {
-		previous := agents_md
-		agents_md = bridge_bootstrap_acp_instructions(previous)
-		delete(previous)
-	}
+	// G12/G9: one bootstrap for every transport. Replies are explicit
+	// `chat send` messages; ACP assistant text is a live stream, not a reply.
 	agents_md_name := bridge_bootstrap_agents_md_name(provider)
 	append(&files, Bridge_Bootstrap_File{file_id = strings.clone(agents_md_name), relative_path = strings.clone(agents_md_name), kind = "AGENTS_MD", content = agents_md, mode = 0o644})
 
