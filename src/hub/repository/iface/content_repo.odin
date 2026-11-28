@@ -49,6 +49,13 @@ Content_Repository :: struct {
 	get_input_runtime: Content_Get_Input_Runtime_Proc,
 	save_input_runtime: Content_Save_Input_Runtime_Proc,
 	set_message_delivery_flags: Content_Set_Message_Delivery_Flags_Proc,
+	// Reply origin (R7, reply_origin.odin).
+	record_input_consumption: Content_Record_Input_Consumption_Proc,
+	list_input_consumptions: Content_List_Input_Consumptions_Proc,
+	get_reply_watermark: Content_Get_Reply_Watermark_Proc,
+	advance_reply_watermark: Content_Advance_Reply_Watermark_Proc,
+	message_origin: Content_Message_Origin_Proc,
+	conversation_has_channel: Content_Conversation_Has_Channel_Proc,
 	ctx: rawptr,
 	// Atomically insert one answer only while source is the last visible row.
 	// A duplicate returns the original row with inserted=false, before freshness.
