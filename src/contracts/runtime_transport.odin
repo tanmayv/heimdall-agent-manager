@@ -21,6 +21,42 @@ runtime_transport_valid :: proc(value: string) -> bool {
 	return value == "pty" || value == "acp"
 }
 
+// What an explicit Send now needs from the Hub, per runtime transport. It is
+// a property of the runtime adapter an instance was launched with (its frozen
+// runtime_transport), not of the provider: one provider can run under either
+// transport. Shared Hub and UI code read this, never a transport name.
+//   Members: the runtime delivers message bodies; the Hub freezes the
+//            turn-held messages as the batch members (ACP).
+//   Notice:  the agent reads its own conversation (chat read returns every
+//            unread message), so the Hub sends only a request id and the
+//            bridge types the unread notice (PTY).
+Runtime_Send_Now :: enum u8 { Unsupported, Members, Notice }
+
+RUNTIME_SEND_NOW_WIRE := [Runtime_Send_Now]string {
+	.Unsupported = "",
+	.Members     = "members",
+	.Notice      = "notice",
+}
+
+Runtime_Transport_Capabilities :: struct {
+	send_now: Runtime_Send_Now,
+}
+
+@(private)
+Runtime_Transport_Entry :: struct { transport: string, caps: Runtime_Transport_Capabilities }
+
+@(private)
+runtime_transport_table := [?]Runtime_Transport_Entry{
+	{"pty", {send_now = .Notice}},
+	{"acp", {send_now = .Members}},
+}
+
+// runtime_transport_capabilities: an unknown transport supports nothing.
+runtime_transport_capabilities :: proc(transport: string) -> Runtime_Transport_Capabilities {
+	for e in runtime_transport_table do if e.transport == transport do return e.caps
+	return {}
+}
+
 provider_supports_transport :: proc(raw, transport: string) -> bool {
 	if !runtime_transport_valid(transport) do return false
 	if raw == "" do return transport == "pty"

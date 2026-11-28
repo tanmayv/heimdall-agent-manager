@@ -328,8 +328,16 @@ send_now :: proc(s: ^Content_Service, auth: contracts.Auth_Context, cid: string,
     if local.agents == nil do return result, false, domain.domain_error(.Internal_Error, "agent repository is not configured")
     inst, exists, ierr := iface.agent_get_instance(local.agents, c.agent_instance_id)
     if !exists || inst.owner_user_id != c.owner_user_id do return result, false, ierr if ierr.code != .None else domain.domain_error(.Not_Found, "agent instance not found")
-    if inst.runtime_transport != "acp" do return result, false, domain.domain_error(.Conflict, "send now requires an ACP agent")
+    send_now_kind := contracts.runtime_transport_capabilities(inst.runtime_transport).send_now
+    if send_now_kind == .Unsupported do return result, false, domain.domain_error(.Conflict, "send now is not available for this agent's runtime")
     if req.launch_epoch != inst.launch_epoch do return result, false, domain.domain_error(.Conflict, "stale launch epoch")
+    if send_now_kind == .Notice {
+        notice, recorded, nerr := send_now_notice_record(&local, &uow, c, inst, req)
+        if !recorded do return notice, false, nerr
+        committed = true
+        if notice.outcome != "accepted" do return notice, true, {}
+        return send_now_notice_dispatch(s, inst, notice), true, {}
+    }
     now := platform.clock_now(s.clock)
     batch, have, berr := iface.content_find_send_now_batch(local.content, c.conversation_id, req.request_id)
     if berr.code != .None do return result, false, berr
@@ -425,6 +433,92 @@ send_now :: proc(s: ^Content_Service, auth: contracts.Auth_Context, cid: string,
     if applied do result.batch = updated
     if !delivered { result.outcome = "failed"; if !applied { result.batch.state = "failed"; result.batch.error = "bridge_offline" } }
     return result, true, {}
+}
+
+// Send now for a runtime without members (contracts.Runtime_Send_Now.Notice):
+// the agent reads its own conversation, so the request carries no message ids
+// and the bridge types one unread notice. The request is recorded as a batch
+// row without members, so a repeat click with the same request_id is
+// idempotent and a click while one is in flight never sends a second command.
+// Commits the unit of work on success; outcome "accepted" means dispatch next.
+send_now_notice_record :: proc(local: ^Content_Service, uow: ^iface.Unit_Of_Work, c: domain.Chat_Conversation, inst: domain.Agent_Instance, req: Send_Now_Request) -> (Send_Now_Result, bool, domain.Domain_Error) {
+    result: Send_Now_Result
+    result.changed_ids = make([dynamic]string, context.temp_allocator)
+    result.conversation = c
+    now := platform.clock_now(local.clock)
+    batch, have, berr := iface.content_find_send_now_batch(local.content, c.conversation_id, req.request_id)
+    if berr.code != .None do return result, false, berr
+    if have {
+        if batch.launch_epoch != inst.launch_epoch && acp_batch_open(batch.state) { batch.state = "failed"; batch.error = "agent_restarted" }
+        if acp_batch_stalled(batch, now) { batch.state = "failed"; batch.error = "bridge_no_response" }
+        switch batch.state {
+        case "pending", "sent", "dispatching":
+            result.outcome = "duplicate"; result.batch = batch
+            ok, err := iface.unit_of_work_commit(uow)
+            return result, ok, err
+        case "delivered", "empty":
+            result.outcome = batch.state; result.batch = batch
+            ok, err := iface.unit_of_work_commit(uow)
+            return result, ok, err
+        }
+        if batch.launch_epoch != inst.launch_epoch do return result, false, domain.domain_error(.Conflict, "stale launch epoch")
+        batch.attempt += 1; batch.error = ""; batch.state = "pending"; batch.updated_at = now
+    } else {
+        latest, have_latest, lerr := iface.content_latest_send_now_batch(local.content, c.conversation_id)
+        if lerr.code != .None do return result, false, lerr
+        if have_latest && latest.launch_epoch == inst.launch_epoch && acp_batch_open(latest.state) && !acp_batch_stalled(latest, now) {
+            result.outcome = "duplicate"; result.batch = latest
+            ok, err := iface.unit_of_work_commit(uow)
+            return result, ok, err
+        }
+        batch = {batch_id=platform.generate_id(local.ids, "snb_"), owner_user_id=string(c.owner_user_id), conversation_id=c.conversation_id,
+            agent_instance_id=c.agent_instance_id, launch_epoch=inst.launch_epoch, request_id=req.request_id, attempt=1,
+            state="pending", member_ids_json="[]", excluded_json="[]", created_at=now, updated_at=now}
+    }
+    if err := iface.content_save_send_now_batch(local.content, batch); err.code != .None do return result, false, err
+    ok, err := iface.unit_of_work_commit(uow)
+    if !ok do return result, false, err
+    result.batch = batch; result.outcome = "accepted"
+    return result, true, {}
+}
+
+// The bridge's command result is the outcome: delivered once the runtime has
+// typed the notice, failed otherwise. A sink that cannot wait for results
+// leaves the request sent (a stall makes it retryable).
+SEND_NOW_NOTICE_REPLY_TIMEOUT_MS :: 15_000
+
+send_now_notice_dispatch :: proc(s: ^Content_Service, inst: domain.Agent_Instance, accepted: Send_Now_Result) -> Send_Now_Result {
+    result := accepted
+    batch := accepted.batch
+    command := contracts.ACP_Send_Now_Batch_Command{type=contracts.ACP_SEND_NOW_BATCH_COMMAND, command_id=acp_send_now_command_id(batch), bridge_id=inst.bridge_id,
+        agent_instance_id=batch.agent_instance_id, launch_epoch=batch.launch_epoch, batch_id=batch.batch_id, attempt=batch.attempt}
+    raw, _ := json.marshal(command, allocator=context.temp_allocator)
+    runtime_command := project_service.Runtime_Command{bridge_id=inst.bridge_id, command_id=command.command_id, body_json=string(raw)}
+    next, error := "failed", "bridge_offline"
+    if inst.bridge_id != "" && s.bridge_command_sink.send_runtime_command_wait != nil {
+        reply, replied, werr := project_service.bridge_command_send_runtime_wait(s.bridge_command_sink, runtime_command, SEND_NOW_NOTICE_REPLY_TIMEOUT_MS)
+        if replied {
+            defer delete(reply)
+            if typed, _ := project_service.bridge_reply_refusal(reply, inst.bridge_id); typed { next, error = "delivered", "" } else { error = "send_failed" }
+        } else {
+            // A failed command_result arrives as a typed refusal.
+            #partial switch werr.code {
+            case .Bridge_Offline:
+            case .Bridge_Timeout: error = "bridge_no_response"
+            case: error = "send_failed"
+            }
+        }
+    } else if inst.bridge_id != "" && s.bridge_command_sink.send_runtime_command != nil {
+        if sent, _ := project_service.bridge_command_send_runtime(s.bridge_command_sink, runtime_command); sent { next, error = "sent", "" }
+    }
+    updated, applied := acp_batch_advance_local(s, batch.batch_id, batch.attempt, "pending", next, error)
+    result.batch = updated if applied else batch
+    if !applied { result.batch.state = next; result.batch.error = error }
+    switch next {
+    case "delivered": result.outcome = "delivered"
+    case "failed": result.outcome = "failed"
+    }
+    return result
 }
 
 // Compare-and-set on (attempt, state) so a racing bridge report wins.

@@ -105,7 +105,8 @@ send_now_handler :: proc(ctx: rawptr, req: Request) -> Response {
 }
 
 // GET /api/v1/chats/{cid}/send-now: the latest batch plus the runtime facts the
-// UI needs after a reload (current epoch, steering capability if reported).
+// UI needs after a reload (current epoch, steering capability if reported, and
+// send_now: what Send now takes for this runtime, "members" | "notice" | "").
 get_send_now_handler :: proc(ctx: rawptr, req: Request) -> Response {
     h := (^Content_Handlers)(ctx)
     auth, ok, resp := require_auth(h.auth,req)
@@ -122,6 +123,7 @@ get_send_now_handler :: proc(ctx: rawptr, req: Request) -> Response {
     b := strings.builder_make(allocator=context.temp_allocator)
     strings.write_string(&b,`{"conversation_id":"`); write_handler_json_string(&b,c.conversation_id)
     strings.write_string(&b,`","runtime_transport":"`); write_handler_json_string(&b,transport)
+    strings.write_string(&b,`","send_now":"`); strings.write_string(&b,contracts.RUNTIME_SEND_NOW_WIRE[contracts.runtime_transport_capabilities(transport).send_now])
     strings.write_string(&b,`","launch_epoch":"`); write_handler_json_string(&b,epoch)
     strings.write_string(&b,`","steering_supported":`); strings.write_string(&b,"null" if !known else ("true" if steering else "false"))
     strings.write_string(&b,`,"batch":`); write_send_now_batch_json(&b,batch); strings.write_byte(&b,'}')

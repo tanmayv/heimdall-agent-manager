@@ -15,12 +15,20 @@ import project_service "odin_test:hub/service/project"
 // Hub-side ACP delivery evidence and conversation-level Send now. Uses the real
 // SQLite schema (including acp_delivery_001), unit of work and HTTP handlers.
 
-Ad_Sink :: struct { commands: [dynamic]string, offline: bool, allocator: mem.Allocator }
+Ad_Sink :: struct { commands: [dynamic]string, offline, refuse: bool, allocator: mem.Allocator }
 ad_sink_send :: proc(ctx: rawptr, command: project_service.Runtime_Command) -> (bool, domain.Domain_Error) {
     sink := (^Ad_Sink)(ctx)
     if sink.offline do return false, domain.domain_error(.Bridge_Offline, "offline")
     append(&sink.commands, strings.clone(command.body_json, sink.allocator))
     return true, {}
+}
+// A sink that waits for the bridge's command_result (PTY Send now's outcome).
+ad_sink_wait :: proc(ctx: rawptr, command: project_service.Runtime_Command, timeout_ms: int) -> (string, bool, domain.Domain_Error) {
+    sink := (^Ad_Sink)(ctx)
+    if sink.offline do return "", false, domain.domain_error(.Bridge_Offline, "offline")
+    append(&sink.commands, strings.clone(command.body_json, sink.allocator))
+    if sink.refuse do return "", false, domain.domain_error(.Conflict, "the agent runtime did not accept the command")
+    return strings.clone(`{"type":"command_result","status":"succeeded"}`), true, {}
 }
 ad_cmd :: proc(f: ^ACP_Chat_Fixture, kind: string, n: int) -> string {
     i := 0
@@ -399,4 +407,55 @@ ad_default_unread_agent_read_after_bridge_admission_is_read_evidence :: proc(t: 
     r = agent_action_chat_read_handler(&f.mq.agent_handlers, ad_agent_req(&f, "/api/v1/agent-actions/chat/read", `{"agent_instance_id":"inst_mq","params":{}}`))
     testing.expect(t, r.status == 200 && !strings.contains(r.body, held), r.body)
     testing.expect_value(t, ad_count(&f,contracts.ACP_INPUTS_READ_COMMAND), 1)
+}
+
+// A runtime without members (PTY): Send now is accepted for it, dispatched
+// with no message ids, its outcome is the bridge's command result, and a
+// repeat of the same request is a no-op.
+@(test)
+ad_pty_send_now_is_memberless_and_idempotent_per_request :: proc(t: ^testing.T) {
+    arena := ad_arena(); defer virtual.arena_destroy(&arena)
+    context.allocator = virtual.arena_allocator(&arena); context.temp_allocator = context.allocator
+    f: ACP_Chat_Fixture; ad_open(t, &f); defer mq_http_base_close(f.mq.base)
+    f.mq.svc.bridge_command_sink.send_runtime_command_wait = ad_sink_wait
+    inst, _, _ := iface.agent_get_instance(&f.mq.base.ag_repo, "inst_mq")
+    inst.runtime_transport = "pty"; inst.run_count += 1; _, _, _ = iface.agent_save_instance(&f.mq.base.ag_repo, inst)
+    a := ad_send(t, &f, "a")
+    _, tracked, _ := iface.content_get_input_delivery(&f.mq.repo, a)
+    testing.expect(t, !tracked, "PTY rows keep no delivery record")
+    g := get_send_now_handler(&f.mq.handlers, mq_http_req(f.mq.base, "/api/v1/chats/chat_mq/send-now", ""))
+    testing.expect(t, g.status == 200 && strings.contains(g.body, `"send_now":"notice"`), g.body)
+    r := ad_send_now(&f, "req_p", ids = {a}); testing.expect(t, r.status == 200, r.body)
+    outcome, batch, attempt := ad_batch_of(r.body)
+    testing.expect_value(t, outcome, "delivered"); testing.expect_value(t, attempt, 1)
+    testing.expect_value(t, ad_count(&f, "acp_send_now_batch"), 1)
+    cmd: contracts.ACP_Send_Now_Batch_Command
+    testing.expect(t, json.unmarshal_string(ad_cmd(&f, "acp_send_now_batch", 0), &cmd, allocator = context.temp_allocator) == nil)
+    testing.expect(t, cmd.batch_id == batch && cmd.attempt == 1 && cmd.launch_epoch == "epoch" && len(cmd.message_ids) == 0, "dispatched without members")
+    testing.expect_value(t, cmd.command_id, fmt.tprintf("cmd_sn_%s_a1", batch))
+    got, _, _ := iface.content_get_send_now_batch(&f.mq.repo, batch)
+    testing.expect(t, got.state == "delivered" && got.member_ids_json == "[]", got.state)
+    // A repeat click with the same request is a no-op.
+    r = ad_send_now(&f, "req_p"); outcome, _, _ = ad_batch_of(r.body)
+    testing.expect_value(t, outcome, "delivered")
+    testing.expect_value(t, ad_count(&f, "acp_send_now_batch"), 1)
+    // A refused command is an honest failure; the retry bumps the attempt.
+    f.delivery_sink.refuse = true
+    r = ad_send_now(&f, "req_q"); testing.expect_value(t, r.status, 503)
+    outcome, batch, _ = ad_batch_of(r.body); testing.expect_value(t, outcome, "failed")
+    got, _, _ = iface.content_get_send_now_batch(&f.mq.repo, batch)
+    testing.expect_value(t, got.error, "send_failed")
+    f.delivery_sink.refuse = false
+    r = ad_send_now(&f, "req_q"); outcome, _, attempt = ad_batch_of(r.body)
+    testing.expect_value(t, outcome, "delivered"); testing.expect_value(t, attempt, 2)
+    testing.expect(t, strings.contains(ad_cmd(&f, "acp_send_now_batch", 2), fmt.tprintf("cmd_sn_%s_a2", batch)))
+    // An offline bridge fails honestly; a stale epoch is refused.
+    f.delivery_sink.offline = true
+    r = ad_send_now(&f, "req_o"); testing.expect_value(t, r.status, 503)
+    outcome, batch, _ = ad_batch_of(r.body); testing.expect_value(t, outcome, "failed")
+    got, _, _ = iface.content_get_send_now_batch(&f.mq.repo, batch)
+    testing.expect_value(t, got.error, "bridge_offline")
+    f.delivery_sink.offline = false
+    r = ad_send_now(&f, "req_s", epoch = "old"); testing.expect_value(t, r.status, 409)
+    testing.expect_value(t, ad_count(&f, "acp_send_now_batch"), 3)
 }
