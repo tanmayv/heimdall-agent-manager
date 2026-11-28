@@ -47,6 +47,7 @@ t5_input_relay :: proc(path:[]string,method,params:string,rec:Bridge_Local_Agent
 @(test)
 t5_acp_input_queue_before_ack_fifo_and_duplicate_notice :: proc(t:^testing.T) {
     sync.mutex_lock(&bridge_test_config_mutex);defer sync.mutex_unlock(&bridge_test_config_mutex)
+    prev_dir,dir:=inbox_test_begin("t5-input-queue");defer inbox_test_end(prev_dir,dir)
     previous_records:=bridge_local_token_records
     bridge_local_token_records=make([dynamic]Bridge_Local_Agent_Token_Record,allocator=runtime.heap_allocator())
     defer {delete(bridge_local_token_records);bridge_local_token_records=previous_records}
@@ -77,9 +78,14 @@ t5_acp_input_queue_before_ack_fifo_and_duplicate_notice :: proc(t:^testing.T) {
         testing.expect(t,strings.contains(input.text,"actual message") && strings.contains(input.text,"chosen answer") && strings.contains(input.text,"selected") && !strings.contains(input.text,"chat read"))
     }
     testing.expect_value(t,len(f.r.client.state.queued_input_message_ids),0)
-    // The prompt queue is still durable after the Hub receipt was recorded.
-    restored,valid:=acp_state_decode(f.f.snapshot);defer acp_state_delete(&restored)
-    testing.expect(t,valid && strings.contains(restored.runtime_json,"actual message"))
+    // The prompt queue is still durable after the Hub receipt was recorded:
+    // it lives in the instance's inbox file, sealed like the journal.
+    testing.expect(t,acp_runtime_committed(f.r))
+    inbox_path,_:=bridge_inbox_path("inst_t5_events");defer delete(inbox_path)
+    raw,read_err:=os.read_entire_file(inbox_path,context.temp_allocator)
+    testing.expect(t,read_err==nil && !strings.contains(string(raw),"actual message"),"sealed at rest")
+    saved,loaded:=bridge_inbox_load("inst_t5_events");defer bridge_inbox_delete(&saved)
+    testing.expect(t,loaded && saved.sealed && len(saved.queue)==3 && strings.contains(saved.queue[0].text,"actual message"))
 }
 t5_notification :: proc(data:rawptr,method,params:string) {
     f:=cast(^T4_Runtime_Test)data;defer {delete(method);delete(params)}
