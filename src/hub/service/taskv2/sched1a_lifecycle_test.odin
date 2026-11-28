@@ -207,7 +207,7 @@ test_sched1a_row03_submit_without_reviewers_stops_worker :: proc(t: ^testing.T) 
 	wake_log_reset(log)
 	if !s1a_submit(t, fx, "inst_w1", "done") do return
 	testing.expect_value(t, get_task(fx, "task_1").state, domain.Task_State.Done)
-	s1a_expect_stopped(t, fx, log, "inst_w1", STOP_REASON_TASK_COMPLETED, "done without review")
+	s1a_expect_stopped(t, fx, log, "inst_w1", string(STOP_REASON_TASK_COMPLETED), "done without review")
 	s1a_expect_coordinator_untouched(t, fx, log, "done without review")
 }
 
@@ -227,7 +227,7 @@ test_sched1a_row04_approve_with_gate_waiting_stops_reviewer :: proc(t: ^testing.
 	res, rok := s1a_review(t, fx, "inst_r1", "approve")
 	if !rok do return
 	testing.expect_value(t, res.gate, Gate_Result.Waiting)
-	s1a_expect_stopped(t, fx, log, "inst_r1", STOP_REASON_REVIEW_POSTED, "approve, gate waiting")
+	s1a_expect_stopped(t, fx, log, "inst_r1", string(STOP_REASON_REVIEW_POSTED), "approve, gate waiting")
 	claim, held := lease_of(fx, "inst_w1")
 	testing.expect(t, held && claim.phase == domain.LEASE_PHASE_WAITING && !wake_log_has_stop(log, "inst_w1"), "worker kept with its waiting claim")
 	other, oheld := lease_of(fx, "inst_r2")
@@ -249,8 +249,8 @@ test_sched1a_row05_approve_gate_passes_stops_worker_and_reviewer :: proc(t: ^tes
 	if !rok do return
 	testing.expect_value(t, res.gate, Gate_Result.Approved)
 	testing.expect_value(t, get_task(fx, "task_1").state, domain.Task_State.Done)
-	s1a_expect_stopped(t, fx, log, "inst_w1", STOP_REASON_TASK_COMPLETED, "task done")
-	s1a_expect_stopped(t, fx, log, "inst_r1", STOP_REASON_REVIEW_POSTED, "task done")
+	s1a_expect_stopped(t, fx, log, "inst_w1", string(STOP_REASON_TASK_COMPLETED), "task done")
+	s1a_expect_stopped(t, fx, log, "inst_r1", string(STOP_REASON_REVIEW_POSTED), "task done")
 	leases, _ := iface.taskchain_list_leases_by_task(&fx.repo, "task_1")
 	testing.expect_value(t, len(leases), 0)
 	s1a_expect_coordinator_untouched(t, fx, log, "task done")
@@ -343,7 +343,7 @@ test_sched1a_row09_grace_window_end_stops_reviewer :: proc(t: ^testing.T) {
 	testing.expect(t, !wake_log_has_stop(log, "inst_r1"), "kept inside the window")
 	fixture_advance(fx, 2)
 	_ = fire_due(&fx.svc, now_ms(&fx.clock))
-	s1a_expect_stopped(t, fx, log, "inst_r1", STOP_REASON_IDLE_TTL, "window ended")
+	s1a_expect_stopped(t, fx, log, "inst_r1", string(STOP_REASON_IDLE_TTL), "window ended")
 	testing.expect(t, !wake_log_has_stop(log, "inst_w1"), "the reworking worker is not stopped")
 	wake_log_reset(log)
 	if !s1a_submit(t, fx, "inst_w1", "v2") do return
@@ -367,7 +367,7 @@ test_sched1a_row10_user_approval_stops_worker :: proc(t: ^testing.T) {
 	_, uok, uerr := user_review(&fx.svc, user_auth(), task.task_id, Review_Input{verdict = "approve"})
 	if !testing.expectf(t, uok, "user approve: %s", uerr.message) do return
 	testing.expect_value(t, get_task(fx, "task_1").state, domain.Task_State.Done)
-	s1a_expect_stopped(t, fx, log, "inst_w1", STOP_REASON_TASK_COMPLETED, "user approved")
+	s1a_expect_stopped(t, fx, log, "inst_w1", string(STOP_REASON_TASK_COMPLETED), "user approved")
 	s1a_expect_coordinator_untouched(t, fx, log, "user approved")
 }
 
@@ -513,7 +513,7 @@ test_sched1a_row16_rollover_keeps_lease :: proc(t: ^testing.T) {
 	inst := s1a_inst(fx, "inst_w1")
 	wake_log_reset(log)
 	log.service.bridge_command_sink = {ctx = log, send_runtime_command = s1a_record_runtime}
-	restarted, accepted, err := agent.restart_instance(&log.service, inst_auth("inst_w1"), "inst_w1", {expected_run_count = inst.run_count})
+	restarted, accepted, err := agent.restart_instance(&log.service, inst_auth("inst_w1"), "inst_w1", .User_Restart,{expected_run_count = inst.run_count})
 	if !testing.expectf(t, accepted, "rollover: %s", err.message) do return
 	testing.expect_value(t, restarted.run_count, inst.run_count + 1)
 	after, held := lease_of(fx, "inst_w1")
@@ -565,7 +565,7 @@ test_sched1a_row18_hub_restart_rearms_grace_window :: proc(t: ^testing.T) {
 	fixture_advance(fx, 121)
 	wake_log_reset(log)
 	_ = fire_due(&fx.svc, now_ms(&fx.clock))
-	s1a_expect_stopped(t, fx, log, "inst_r1", STOP_REASON_IDLE_TTL, "window ended after restart")
+	s1a_expect_stopped(t, fx, log, "inst_r1", string(STOP_REASON_IDLE_TTL), "window ended after restart")
 }
 
 // Row 19: bridge reconnect. A lease-free fleet instance inside its window is
@@ -587,7 +587,7 @@ test_sched1a_row19_bridge_reconnect_honours_grace_window :: proc(t: ^testing.T) 
 	fixture_advance(fx, 121)
 	wake_log_reset(log)
 	on_bridge_hello(&fx.svc, "br_1", live)
-	s1a_expect_stopped(t, fx, log, "inst_r1", STOP_REASON_IDLE_TTL, "reconnect past the window")
+	s1a_expect_stopped(t, fx, log, "inst_r1", string(STOP_REASON_IDLE_TTL), "reconnect past the window")
 	testing.expect(t, !wake_log_has_stop(log, "inst_w1"), "the claim holder is kept")
 	testing.expect(t, !wake_log_has_stop(log, "inst_coord"), "the coordinator is never touched")
 }
@@ -619,7 +619,7 @@ test_sched1a_row19_reconnect_after_disconnect_stops_unreachable_orphans :: proc(
 	on_bridge_hello(&fx.svc, "br_1", live)
 	testing.expect(t, !wake_log_has_stop(log, "inst_r1"), "inside its window: kept even while unreachable")
 	testing.expect_value(t, s1a_inst(fx, "inst_r1").stop_reason, "")
-	s1a_expect_stopped(t, fx, log, "inst_r2", STOP_REASON_IDLE_TTL, "unreachable orphan with no window")
+	s1a_expect_stopped(t, fx, log, "inst_r2", string(STOP_REASON_IDLE_TTL), "unreachable orphan with no window")
 	// Another outage; reconnect after the window ended.
 	bridge_disconnect(fx, "br_1")
 	fixture_advance(fx, 121)
@@ -627,7 +627,7 @@ test_sched1a_row19_reconnect_after_disconnect_stops_unreachable_orphans :: proc(
 	wake_log_reset(log)
 	on_bridge_hello(&fx.svc, "br_1", live)
 	testing.expect_value(t, s1a_inst(fx, "inst_r1").runtime_status, "unreachable")
-	s1a_expect_stopped(t, fx, log, "inst_r1", STOP_REASON_IDLE_TTL, "unreachable grace reviewer past its window")
+	s1a_expect_stopped(t, fx, log, "inst_r1", string(STOP_REASON_IDLE_TTL), "unreachable grace reviewer past its window")
 	testing.expect(t, !wake_log_has_stop(log, "inst_w1"), "the claim holder is kept")
 	testing.expect(t, !wake_log_has_stop(log, "inst_coord"), "the coordinator is never touched")
 }
@@ -656,7 +656,7 @@ test_sched1a_grace_timer_while_offline_stops_on_reconnect :: proc(t: ^testing.T)
 	set_bridge_status(fx, "br_1", true)
 	wake_log_reset(log)
 	on_bridge_hello(&fx.svc, "br_1", []string{"inst_w1", "inst_r1", "inst_coord"})
-	s1a_expect_stopped(t, fx, log, "inst_r1", STOP_REASON_IDLE_TTL, "stop delivered on reconnect")
+	s1a_expect_stopped(t, fx, log, "inst_r1", string(STOP_REASON_IDLE_TTL), "stop delivered on reconnect")
 	testing.expect(t, !wake_log_has_stop(log, "inst_coord"), "the coordinator is never touched")
 }
 

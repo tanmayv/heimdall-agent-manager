@@ -129,8 +129,8 @@ start_bytes_scenario :: proc(t:^testing.T,h:^Start_Test) {
 		start_test_sql(t,h,"UPDATE agent_instances SET runtime_status='stopped',run_count=3 WHERE agent_instance_id='inst';")
 		inst:domain.Agent_Instance; ok:bool; err:domain.Domain_Error
 		switch mode {
-		case 0: inst,ok,err=start_instance(&h.service,start_test_auth(),"inst")
-		case 1: inst,ok,err=restart_instance(&h.service,start_test_auth(),"inst")
+		case 0: inst,ok,err=start_instance(&h.service,start_test_auth(),"inst",.User_Start)
+		case 1: inst,ok,err=restart_instance(&h.service,start_test_auth(),"inst",.User_Restart)
 		case 2: inst,ok,err=create_instance(&h.service,start_test_auth(),{agent_id="agt",bridge_id="brg",provider="codex",model="gpt-6.1-sol"})
 		}
 		testing.expect(t,ok,err.message)
@@ -215,14 +215,14 @@ start_test_pending :: proc(_:rawptr,_,_:string,_:bool)->([]domain.Instance_Recon
 start_test_guard_refuse :: proc(_:rawptr)->domain.Domain_Error {return domain.domain_error(.Forbidden,"guard refused")}
 start_restart_refused_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	start_test_sql(t,h,"UPDATE bridges SET status='offline'; UPDATE agent_instances SET stopped_by='user';")
-	_,ok,err:=restart_instance(&h.service,start_test_auth(),"inst")
+	_,ok,err:=restart_instance(&h.service,start_test_auth(),"inst",.User_Restart)
 	testing.expect(t,!ok)
 	testing.expect_value(t,err.code,domain.Error_Code.Bridge_Offline)
 	testing.expect_value(t,start_test_row(t,h).stopped_by,"user")
 }
 start_send_failure_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	h.fail_send=true
-	_,ok,err:=start_instance(&h.service,start_test_auth(),"inst")
+	_,ok,err:=start_instance(&h.service,start_test_auth(),"inst",.User_Start)
 	testing.expect(t,!ok)
 	testing.expect_value(t,err.code,domain.Error_Code.Bridge_Offline)
 	inst:=start_test_row(t,h)
@@ -358,7 +358,7 @@ start_create_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	h.registry.active_instances = 0
 	_,found,cerr:=iface.content_get_conversation(&h.cr,inst.conversation_id)
 	testing.expect(t,found,cerr.message)
-	first,started,serr:=start_instance(&h.service,start_test_auth(),inst.agent_instance_id)
+	first,started,serr:=start_instance(&h.service,start_test_auth(),inst.agent_instance_id,.User_Start)
 	testing.expect(t,started,serr.message)
 	testing.expect_value(t,first.run_count,1)
 }
@@ -572,7 +572,7 @@ start_race_job :: proc(job:^Start_Race_Job) {
 		job.opened=ok
 		job.already=err.code==.Conflict && strings.contains(err.details_json,"already_running")
 	} else {
-		_,ok,err:=start_instance(&job.h.service,start_test_auth(),"inst")
+		_,ok,err:=start_instance(&job.h.service,start_test_auth(),"inst",.User_Start)
 		job.opened=ok
 		job.already=err.code==.Conflict && strings.contains(err.details_json,"already_running")
 	}
@@ -721,7 +721,7 @@ start_rollover_after_user_stop_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	testing.expect(t,stopped,stop_err.message)
 	before := start_test_row(t,h)
 	auth := contracts.Auth_Context{kind=.Instance_Token,user_id="owner",agent_instance_id="inst"}
-	_, restarted, err := restart_instance(&h.service,auth,"inst")
+	_, restarted, err := restart_instance(&h.service,auth,"inst",.User_Restart)
 	testing.expect(t,!restarted,"delayed self restart cannot undo user stop")
 	testing.expect_value(t,err.code,domain.Error_Code.Conflict)
 	testing.expect_value(t,start_test_row(t,h).run_count,before.run_count)
@@ -735,7 +735,7 @@ start_rollover_after_user_stop_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	testing.expect_value(t,start_test_row(t,h).run_count,before.run_count)
 	testing.expect_value(t,len(h.commands),1)
 	// A new explicit user intent may still restart the stopped instance.
-	manual, manual_ok, manual_err := restart_instance(&h.service,start_test_auth(),"inst")
+	manual, manual_ok, manual_err := restart_instance(&h.service,start_test_auth(),"inst",.User_Restart)
 	testing.expect(t,manual_ok,manual_err.message)
 	testing.expect_value(t,manual.run_count,before.run_count+1)
 	testing.expect_value(t,manual.stopped_by,"")
@@ -749,12 +749,12 @@ test_rollover_after_user_stop_is_refused :: proc(t:^testing.T) {start_test_run(t
 start_rollover_duplicate_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	start_test_sql(t,h,"UPDATE agent_instances SET runtime_status='running';")
 	auth := contracts.Auth_Context{kind=.Instance_Token,user_id="owner",agent_instance_id="inst"}
-	inst, ok, err := restart_instance(&h.service,auth,"inst",{expected_run_count=3})
+	inst, ok, err := restart_instance(&h.service,auth,"inst",.User_Restart,{expected_run_count=3})
 	testing.expect(t,ok,err.message)
 	testing.expect_value(t,inst.run_count,4)
 	testing.expect_value(t,len(h.commands),1)
 	testing.expect_value(t,h.registry.active_instances,1)
-	_, again, duplicate_err := restart_instance(&h.service,auth,"inst",{expected_run_count=3})
+	_, again, duplicate_err := restart_instance(&h.service,auth,"inst",.User_Restart,{expected_run_count=3})
 	testing.expect(t,!again)
 	testing.expect_value(t,duplicate_err.code,domain.Error_Code.Conflict)
 	testing.expect_value(t,start_test_row(t,h).run_count,4)
@@ -766,14 +766,14 @@ start_rollover_failed_send_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	start_test_sql(t,h,"UPDATE agent_instances SET runtime_status='running';")
 	h.fail_send=true
 	auth := contracts.Auth_Context{kind=.Instance_Token,user_id="owner",agent_instance_id="inst"}
-	_, ok, err := restart_instance(&h.service,auth,"inst",{expected_run_count=3})
+	_, ok, err := restart_instance(&h.service,auth,"inst",.User_Restart,{expected_run_count=3})
 	testing.expect(t,!ok)
 	testing.expect_value(t,err.code,domain.Error_Code.Bridge_Offline)
 	testing.expect_value(t,start_test_row(t,h).run_count,4)
 	testing.expect_value(t,start_test_row(t,h).runtime_status,"launching")
 	testing.expect_value(t,h.registry.active_instances,0)
 	h.fail_send=false
-	_, again, retry_err := restart_instance(&h.service,auth,"inst",{expected_run_count=3})
+	_, again, retry_err := restart_instance(&h.service,auth,"inst",.User_Restart,{expected_run_count=3})
 	testing.expect(t,!again,"ambiguous failed restart is never retried as a new generation")
 	testing.expect_value(t,retry_err.code,domain.Error_Code.Conflict)
 	testing.expect_value(t,len(h.commands),1)
@@ -790,7 +790,7 @@ start_rollover_reconfiguration_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	before := start_test_row(t,h)
 	commands, reservations := len(h.commands), h.registry.active_instances
 	auth := contracts.Auth_Context{kind=.Instance_Token,user_id="owner",agent_instance_id="inst"}
-	_, restarted, restart_err := restart_instance(&h.service,auth,"inst",{expected_run_count=before.run_count})
+	_, restarted, restart_err := restart_instance(&h.service,auth,"inst",.User_Restart,{expected_run_count=before.run_count})
 	testing.expect(t,!restarted)
 	testing.expect_value(t,restart_err.code,domain.Error_Code.Conflict)
 	testing.expect_value(t,start_test_row(t,h).run_count,before.run_count)
@@ -807,7 +807,7 @@ start_rollover_reconfiguration_scenario :: proc(t:^testing.T,h:^Start_Test) {
 start_rollover_before_reconfiguration_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	start_test_sql(t,h,`UPDATE bridges SET capabilities_json='{"features":["instance_reconfiguration_v1"]}'; UPDATE agent_instances SET runtime_status='running';`)
 	auth := contracts.Auth_Context{kind=.Instance_Token,user_id="owner",agent_instance_id="inst"}
-	inst, restarted, err := restart_instance(&h.service,auth,"inst",{expected_run_count=3})
+	inst, restarted, err := restart_instance(&h.service,auth,"inst",.User_Restart,{expected_run_count=3})
 	testing.expect(t,restarted,err.message)
 	op, accepted, config_err := begin_instance_reconfiguration(&h.service,start_test_auth(),"inst",{bridge_id="brg",provider="codex",provider_profile="codex",model="gpt-6.1-sol",permission_mode="ask",idempotency_key="configuration",expected_revision=inst.configuration_revision})
 	testing.expect(t,accepted,config_err.message)
@@ -815,7 +815,7 @@ start_rollover_before_reconfiguration_scenario :: proc(t:^testing.T,h:^Start_Tes
 	testing.expect_value(t,op.destination.permission_mode,"ask")
 	testing.expect_value(t,start_test_row(t,h).run_count,4)
 	commands := len(h.commands)
-	_, duplicate, duplicate_err := restart_instance(&h.service,auth,"inst",{expected_run_count=3})
+	_, duplicate, duplicate_err := restart_instance(&h.service,auth,"inst",.User_Restart,{expected_run_count=3})
 	testing.expect(t,!duplicate)
 	testing.expect_value(t,duplicate_err.code,domain.Error_Code.Conflict)
 	testing.expect_value(t,len(h.commands),commands)
@@ -906,7 +906,7 @@ confirmed_runtime_actions_scenario :: proc(t: ^testing.T, h: ^Start_Test) {
 confirmed_live_start_scenario :: proc(t: ^testing.T, h: ^Start_Test) {
 	start_test_sql(t, h, "UPDATE agent_instances SET runtime_status='running', startup_status='ready';")
 	h.service.bridge_command_sink.send_runtime_command_wait = start_test_confirmed_wait
-	row, ok, err := start_instance_confirmed(&h.service, start_test_auth(), "inst")
+	row, ok, err := start_instance_confirmed(&h.service, start_test_auth(), "inst",.User_Start)
 	testing.expect(t, ok, err.message)
 	testing.expect_value(t, row.runtime_status, "running")
 	testing.expect_value(t, row.startup_status, "ready")

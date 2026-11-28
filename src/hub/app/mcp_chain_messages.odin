@@ -54,7 +54,7 @@ mcp_send_chain_message :: proc(ctx:rawptr,raw:string,view:mcp.Access_View,chain_
 	// Visibility and all Bridge effects happen after commit. A failed wake never
 	// changes accepted persistence into an error that encourages duplicate sends.
 	http.publish_user_message_created(&g.content_handlers,principal,c.conversation_id,m)
-	restarted,restart_err:=http.restart_stopped_conversation_instance(&g.content_handlers,principal,c.conversation_id)
+	restarted,restart_err:=http.restart_stopped_conversation_instance(&g.content_handlers,principal,c.conversation_id,.Chain_Message)
 	delivered,delivery_err:=content.deliver_user_message(&g.content,principal,c.conversation_id,m)
 	if !restarted || !delivered {
 		result.delivery_warning="delivery_unavailable"

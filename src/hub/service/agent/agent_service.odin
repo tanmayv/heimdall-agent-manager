@@ -179,7 +179,7 @@ Create_Instance_Input :: struct {
 	member_role: string,
 }
 
-Stop_Instance_Input :: struct { reason: string, force: bool }
+Stop_Instance_Input :: struct { reason: Stop_Reason, force: bool }
 Reconfigure_Instance_Input :: struct { provider_profile, provider, model, agent_id, bridge_id, chain_id, conversation_id, display_name: string, project_id: domain.Project_ID, has_agent_id, has_bridge_id, has_project_id, has_chain_id, has_conversation_id, has_display_name: bool }
 
 new_agent_service :: proc(agents: ^iface.Agent_Repository, bridges: ^iface.Bridge_Repository, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> Agent_Service {
@@ -348,7 +348,7 @@ create_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, i
  inst, created, err := create_instance_stopped(service, auth, input)
  if !created do return {}, false, err
  defer domain.agent_instance_destroy(&inst)
- return start_instance(service, auth, inst.agent_instance_id)
+ return start_instance(service, auth, inst.agent_instance_id, .Instance_Create)
 }
 
 // prepare_instance validates and creates a stopped instance, conversation and
@@ -851,17 +851,17 @@ stop_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, ins
 	inst, ok, err := get_instance(service, auth, instance_id)
 	if !ok do return domain.Agent_Instance{}, false, err
 	if !project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, inst.bridge_id) do return domain.Agent_Instance{}, false, domain.domain_error(.Bridge_Offline, "bridge is offline")
-	reason := input.reason; if reason == "" do reason = "user_requested"
+	reason := input.reason; if reason == "" do reason = STOP_USER_REQUESTED
 	// F4: a user stop sticks. Persist it first (the matcher reads stopped_by),
 	// then let the engine release the lease and re-plan, then send the stop.
-	if strings.has_prefix(reason, "user") && inst.stopped_by != STOPPED_BY_USER {
+	if stop_reason_is_user(reason) && inst.stopped_by != STOPPED_BY_USER {
 		inst.stopped_by = STOPPED_BY_USER
 		inst.updated_at = platform.clock_now(service.clock)
 		saved, sok, serr := iface.agent_save_instance(service.agents, inst)
 		if !sok do return domain.Agent_Instance{}, false, serr
 		inst = saved
 	}
-	if strings.has_prefix(reason, "user") && service.hooks.on_user_stopped != nil {
+	if stop_reason_is_user(reason) && service.hooks.on_user_stopped != nil {
 		service.hooks.on_user_stopped(service.hooks.ctx, inst.agent_instance_id)
 		if fresh, fok, _ := iface.agent_get_instance(service.agents, inst.agent_instance_id); fok do inst = fresh
 	}
@@ -873,7 +873,7 @@ stop_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, ins
 	reconfiguration_cancel_waiting_locked(service, string(inst.owner_user_id), inst.agent_instance_id)
 	// Record why the Hub stopped it (UI label, instance events). Saves never
 	// write the column; the next run clears it.
-	if recorded, _ := iface.agent_set_stop_reason(service.agents, inst.agent_instance_id, reason); recorded do inst.stop_reason = strings.clone(reason)
+	if recorded, _ := iface.agent_set_stop_reason(service.agents, inst.agent_instance_id, string(reason)); recorded do inst.stop_reason = strings.clone(string(reason))
 	inst.runtime_status = "stopping"
 	inst.updated_at = platform.clock_now(service.clock)
 	return iface.agent_save_instance(service.agents, inst)
@@ -897,7 +897,7 @@ stop_instance_confirmed :: proc(service: ^Agent_Service, auth: contracts.Auth_Co
 	dbt.timed_unlock(&service.reconfiguration_mutex, .Reconfig, lock_tok)
 	held = false
 	reason := input.reason
-	if reason == "" do reason = "user_requested"
+	if reason == "" do reason = STOP_USER_REQUESTED
 	fact := agent_liveness(service, inst, force_probe = true)
 	op := ""
 	defer delete(op)
@@ -925,7 +925,7 @@ stop_instance_confirmed :: proc(service: ^Agent_Service, auth: contracts.Auth_Co
 	next.status_message = "pty_stop_confirmed"
 	next.updated_at = platform.clock_now(service.clock)
 	next.stopped_at = next.updated_at
-	user_stop := strings.has_prefix(reason, "user")
+	user_stop := stop_reason_is_user(reason)
 	if user_stop do next.stopped_by = STOPPED_BY_USER
 	saved, applied, save_err := iface.agent_save_instance_guarded(service.agents, next, inst.run_count, inst.launch_epoch, inst.configuration_revision)
 	if !applied {
@@ -935,22 +935,25 @@ stop_instance_confirmed :: proc(service: ^Agent_Service, auth: contracts.Auth_Co
 	log_runtime_terminal_transition(saved, fresh.runtime_status, "stop_instance_confirmed", "pty_stop_confirmed", op)
 	generation := project_service.bridge_runtime_registry_generation(service.bridge_runtime_registry, saved.bridge_id)
 	project_service.bridge_runtime_instance_retire(service.bridge_runtime_registry, saved.bridge_id, generation, instance_id, "stopped", "pty_stop_confirmed", op)
-	if recorded, _ := iface.agent_set_stop_reason(service.agents, instance_id, reason); recorded do saved.stop_reason = reason
+	if recorded, _ := iface.agent_set_stop_reason(service.agents, instance_id, string(reason)); recorded do saved.stop_reason = string(reason)
 	if user_stop && service.hooks.on_user_stopped != nil do service.hooks.on_user_stopped(service.hooks.ctx, instance_id)
 	defer if saved.runtime_transport != fresh.runtime_transport do delete(saved.runtime_transport)
 	return domain.agent_instance_clone(saved), true, {}
 }
 
-restart_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, input: contracts.Restart_Instance_Input = {expected_run_count=-1}) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
- req := Start_Request{if_live=.Relaunch, require_live=input.expected_run_count >= 0 || auth.kind == .Instance_Token && auth.agent_instance_id == instance_id}
+// restart_instance replaces the child (or starts a stopped one) with the
+// instance's own runtime. Self-restarts (context rollover) name the generation
+// they replace and require it to be live.
+restart_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, reason: Start_Reason, input: contracts.Restart_Instance_Input = {expected_run_count=-1}) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+ req := Start_Request{if_live=.Relaunch, reason=reason, require_live=input.expected_run_count >= 0 || auth.kind == .Instance_Token && auth.agent_instance_id == instance_id}
  expected_run_count := input.expected_run_count
  if expected_run_count >= 0 do req.expected_run_count = &expected_run_count
  inst, _, ok, err := start(service, auth, instance_id, req)
  return inst, ok, err
 }
 
-start_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, guard_ctx:rawptr=nil, guard:proc(ctx:rawptr)->domain.Domain_Error=nil) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
- inst, _, ok, err := start(service, auth, instance_id, {if_live=.Refuse, guard=guard, guard_ctx=guard_ctx})
+start_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, reason: Start_Reason, guard_ctx:rawptr=nil, guard:proc(ctx:rawptr)->domain.Domain_Error=nil) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+ inst, _, ok, err := start(service, auth, instance_id, {if_live=.Refuse, reason=reason, guard=guard, guard_ctx=guard_ctx})
  return inst, ok, err
 }
 
@@ -1839,12 +1842,13 @@ launch_command_json_full :: proc(service: ^Agent_Service, command_id: string, in
 	return strings.to_string(b)
 }
 
-stop_command_json :: proc(command_id, instance_id, reason: string, force: bool = false, expected_pid: int = 0, expected_run_count := -1) -> string {
+// The one stop command builder: every agent stop the Hub sends is built here.
+stop_command_json :: proc(command_id, instance_id: string, reason: Stop_Reason, force: bool = false, expected_pid: int = 0, expected_run_count := -1) -> string {
 	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"stop_agent\",\"protocol_version\":1,\"message_id\":\""); write_service_json_string(&b, strings.concatenate({"msg_", command_id}))
+	strings.write_string(&b, "{\"type\":\"stop_agent\",\"protocol_version\":1,\"message_id\":\"msg_"); write_service_json_string(&b, command_id)
 	strings.write_string(&b, "\",\"command_id\":\""); write_service_json_string(&b, command_id)
 	strings.write_string(&b, "\",\"payload\":{\"agent_instance_id\":\""); write_service_json_string(&b, instance_id)
-	strings.write_string(&b, "\",\"reason\":\""); write_service_json_string(&b, reason)
+	strings.write_string(&b, "\",\"reason\":\""); write_service_json_string(&b, string(reason))
 	strings.write_string(&b, "\",\"grace_seconds\":"); strings.write_string(&b, "0" if force else "10")
 	strings.write_string(&b, ",\"force\":"); strings.write_string(&b, "true" if force else "false")
 	if expected_pid > 0 do strings.write_string(&b, fmt.tprintf(",\"expected_process_pid\":%d", expected_pid))

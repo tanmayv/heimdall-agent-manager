@@ -5,6 +5,7 @@ import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
+import agent "odin_test:hub/service/agent"
 import project "odin_test:hub/service/project"
 import jsonx "odin_test:lib/jsonx"
 
@@ -199,8 +200,10 @@ flush_fenced_stops :: proc(svc:^Service,e:^Effects) {
  for stop in e.fenced_stops {
   command:=stop.command_id
   if command=="" do continue // Older events fail closed until explicitly recovered.
-  p:=json_begin();json_str(&p,"type","stop_agent");json_str(&p,"command_id",command);json_str(&p,"agent_instance_id",stop.instance_id);json_int(&p,"expected_run_count",i64(stop.run_count));json_bool(&p,"force",true)
-  body:=json_end(&p)
+  // The one stop builder (agent.stop_command_json); the fence is the
+  // generation, and a revoked claim's holder is stopped at once.
+  body:=agent.stop_command_json(command,stop.instance_id,agent.STOP_LEASE_REVOKED,force=true,expected_run_count=stop.run_count)
+  defer delete(body)
   if svc.wake_observer!=nil do svc.wake_observer(svc.wake_observer_ctx,Wake_Command{bridge_id=stop.bridge_id,body_json=body})
   _,_=project.bridge_command_send_runtime(svc.bridge_command_sink,project.Runtime_Command{bridge_id=stop.bridge_id,command_id=command,body_json=body})
  }

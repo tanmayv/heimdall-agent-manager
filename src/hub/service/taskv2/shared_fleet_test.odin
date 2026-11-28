@@ -196,7 +196,7 @@ shared_fleet_expect_recorded_runtime :: proc(t: ^testing.T, fx: ^Fixture, chain:
 }
 
 @(test)
-test_shared_fleet_inline_and_coordinator_claim_record_actual_runtime_until_launch :: proc(t: ^testing.T) {
+test_shared_fleet_inline_and_coordinator_claim_keep_actual_runtime_across_relaunch :: proc(t: ^testing.T) {
 	for solo in ([]bool{false, true}) {
 		tag := "shared_inline_coord" if solo else "shared_inline_manual"
 		fx, log, ok := lease_fixture(t, tag)
@@ -241,7 +241,9 @@ test_shared_fleet_inline_and_coordinator_claim_record_actual_runtime_until_launc
 			ticket, te := agent.start_begin(&log.service, {kind=.Internal_User,user_id="u1"}, id, {if_live=.Relaunch})
 			testing.expect_value(t, te.code, domain.Error_Code.None)
 			if te.code == .None {
-				testing.expect(t, ticket.instance.provider == desired.provider && ticket.instance.provider_profile == desired.provider_profile && ticket.instance.model == desired.model, "saved policy is observed at the next real launch")
+				// N2: a relaunch keeps the instance's own runtime; only applying
+				// Fleet settings reconfigures it (fleet_application).
+				testing.expect(t, ticket.instance.provider == actual.provider && ticket.instance.provider_profile == actual.provider_profile && ticket.instance.model == actual.model, "a relaunch keeps the instance runtime")
 				agent.start_cancel(&log.service, &ticket); agent.start_ticket_destroy(&ticket)
 			}
 		}

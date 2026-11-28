@@ -18,6 +18,7 @@ Start_If_Live :: enum { Refuse, Relaunch, Keep }
 
 Start_Request :: struct {
 	if_live: Start_If_Live,
+	reason: Start_Reason,
 	ref: string,
 	provider, model, profile: string,
 	expected: ^domain.Agent_Instance,
@@ -121,9 +122,13 @@ start_begin_impl :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, 
 	}
 	if req.model != "" do next.model = req.model
 	if req.profile != "" do next.provider_profile = req.profile
+	// A start keeps the instance's own runtime (N2): the Fleet policy is applied
+	// when the instance is created and when the user applies Fleet settings
+	// (fleet_application reconfigures the instance), never silently at a
+	// restart. Only an instance without a complete selection resolves it.
 	managed, scope_err := iface.fleet_scope_get(service.bridges, inst)
 	if scope_err.code != .None do return {}, scope_err
-	if managed {
+	if managed && (next.provider == "" || next.model == "") {
 		runtime, e := chain_fleet_runtime(service, inst.owner_user_id, inst.chain_id, inst.bridge_id, inst.agent_id, {next.provider, next.provider_profile, next.model})
 		if e.code != .None do return {}, e
 		defer domain.fleet_runtime_destroy(runtime)
@@ -161,6 +166,7 @@ start_begin_impl :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, 
 		if save_err.code != .None do return {}, save_err
 		return {}, domain.domain_error(.Conflict, "instance changed before start", `{"code":"start_raced"}`)
 	}
+	lifecycle_log_start(saved, req.reason)
 	t = start_ticket_for_row(service, saved, req.ref, false, false)
 	t.reservation = generation
 	t.reserved = true
@@ -258,9 +264,9 @@ start :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id
 // Manual start is a relaunch when a child already exists. The Bridge holds
 // its per-instance lock across closing the old child and spawning the new
 // one. Release the Hub lifecycle lock before waiting: start-success needs it.
-start_instance_confirmed :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, guard_ctx: rawptr = nil, guard: proc(ctx: rawptr) -> domain.Domain_Error = nil) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+start_instance_confirmed :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, reason: Start_Reason, guard_ctx: rawptr = nil, guard: proc(ctx: rawptr) -> domain.Domain_Error = nil) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
 	lock_tok := dbt.timed_lock(&service.reconfiguration_mutex, .Reconfig)
-	ticket, begin_err := start_begin(service, auth, instance_id, {if_live = .Relaunch, guard = guard, guard_ctx = guard_ctx})
+	ticket, begin_err := start_begin(service, auth, instance_id, {if_live = .Relaunch, reason = reason, guard = guard, guard_ctx = guard_ctx})
 	dbt.timed_unlock(&service.reconfiguration_mutex, .Reconfig, lock_tok)
 	if begin_err.code != .None do return {}, false, begin_err
 	defer start_ticket_destroy(&ticket)
@@ -329,7 +335,7 @@ start_begin_for_bridge :: proc(service: ^Agent_Service, owner: domain.User_ID, b
 	lock_tok := dbt.timed_lock(&service.reconfiguration_mutex, .Reconfig)
 	defer dbt.timed_unlock(&service.reconfiguration_mutex, .Reconfig, lock_tok)
 	auth := contracts.Auth_Context{kind=.Session, user_id=string(owner)}
-	ticket, begin_err := start_begin(service, auth, instance_id, {if_live=.Refuse, ref=ref, process_fact=fact, expected=&inst})
+	ticket, begin_err := start_begin(service, auth, instance_id, {if_live=.Refuse, reason=.Bridge_Wake, ref=ref, process_fact=fact, expected=&inst})
 	if begin_err.code != .None do return "", 0, false, false, begin_err
 	defer start_ticket_destroy(&ticket)
 	return start_launch_json(service, ticket), ticket.instance.run_count, ticket.reused, true, {}

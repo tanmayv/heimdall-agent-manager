@@ -175,7 +175,7 @@ parse_instance_probe :: proc(reply, command_id, instance_id: string, expected_ru
 
 // The operation ID is supplied by the caller so retries reuse the same
 // Bridge command receipt. Call outside the lifecycle lock and WS reader.
-confirm_stop_observed_process :: proc(service: ^Agent_Service, inst: domain.Agent_Instance, fact: Agent_Liveness, operation_id, reason: string, force := false) -> domain.Domain_Error {
+confirm_stop_observed_process :: proc(service: ^Agent_Service, inst: domain.Agent_Instance, fact: Agent_Liveness, operation_id: string, reason: Stop_Reason, force := false) -> domain.Domain_Error {
 	if service == nil || operation_id == "" || fact.state != .Alive || fact.pid <= 0 do return domain.domain_error(.Conflict, "stop needs a verified live process")
 	body := stop_command_json(operation_id, inst.agent_instance_id, reason, force = force, expected_pid = fact.pid, expected_run_count = inst.run_count)
 	defer delete(body)

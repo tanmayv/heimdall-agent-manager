@@ -197,7 +197,7 @@ create_chat_handler :: proc(ctx:rawptr, req:Request)->Response{
 }
 patch_chat_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; c,saved,err:=content_service.update_conversation_title(h.content,auth,path_part(req.path,4),json_string(req.body,"title")); if !saved do return respond_error(err,req.request_id); publish_conversation_changed(h.event_bus, c, "updated"); b:=strings.builder_make(); write_chat_json(&b,c); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req)) }
 list_chat_messages_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; limit:=query_int(req.query,"limit",50); cursor:=query_value(req.query,"cursor"); rows,err:=content_service.list_user_visible_messages(h.content,auth,path_part(req.path,4),limit,cursor); if err.code!=.None do return respond_error(err,req.request_id); b:=strings.builder_make(); strings.write_byte(&b,'['); next:=""; for r,i in rows{ if i>0 do strings.write_byte(&b,','); write_message_json(&b,r,h.content); next=strings.concatenate({r.created_at,"|",r.message_id},context.temp_allocator)}; strings.write_byte(&b,']'); has_more:=len(rows)>=limit; return respond_list(strings.to_string(b),contracts.API_Page{limit=limit,next_cursor=next if has_more else "",has_more=has_more},req.request_id,auth_ctx_server_time(req)) }
-send_chat_message_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; cid:=path_part(req.path,4); if restarted,restart_err:=restart_stopped_conversation_instance(h,auth,cid); !restarted do return respond_error(restart_err,req.request_id); m,saved,err:=content_service.send_message(h.content,auth,cid,message_input(req.body)); if !saved do return respond_error(err,req.request_id); publish_user_message_created(h,auth,cid,m); b:=strings.builder_make(); write_message_json(&b,m,h.content); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req),201) }
+send_chat_message_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; cid:=path_part(req.path,4); if restarted,restart_err:=restart_stopped_conversation_instance(h,auth,cid,.User_Message); !restarted do return respond_error(restart_err,req.request_id); m,saved,err:=content_service.send_message(h.content,auth,cid,message_input(req.body)); if !saved do return respond_error(err,req.request_id); publish_user_message_created(h,auth,cid,m); b:=strings.builder_make(); write_message_json(&b,m,h.content); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req),201) }
 
 // publish_user_message_created tells every socket of the owner (other tabs and
 // devices included) about a user->agent message that send_message persisted.
@@ -368,14 +368,16 @@ create_template_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content
 update_template_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; t,saved,err:=content_service.update_template(h.content,auth,path_part(req.path,4),template_input(req.body)); if !saved do return respond_error(err,req.request_id); b:=strings.builder_make(); write_template_json(&b,t); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req)) }
 delete_template_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; deleted,err:=content_service.delete_template(h.content,auth,path_part(req.path,4)); if !deleted do return respond_error(err,req.request_id); return Response{status=204,content_type="application/json",body=""} }
 
-restart_stopped_conversation_instance :: proc(h:^Content_Handlers, auth:contracts.Auth_Context, cid:string, guard_ctx:rawptr=nil, guard:proc(ctx:rawptr)->domain.Domain_Error=nil)->(bool,domain.Domain_Error) {
+// Ensures the conversation's agent runs before a message is delivered (the
+// one lifecycle path, agent_service.ensure_running).
+restart_stopped_conversation_instance :: proc(h:^Content_Handlers, auth:contracts.Auth_Context, cid:string, reason:agent_service.Start_Reason, guard_ctx:rawptr=nil, guard:proc(ctx:rawptr)->domain.Domain_Error=nil)->(bool,domain.Domain_Error) {
  c, got, err := content_service.get_conversation(h.content, auth, cid)
  if !got do return false, err
  if c.agent_instance_id == "" || h.agents == nil do return true, {}
  if h.content.agent_configuration_service != nil {
   if valid, validity_err := agent_service.validate_instance_message_configuration(h.agents,c.owner_user_id,c.agent_instance_id); !valid do return false,validity_err
  }
- inst, kept, started, start_err := agent_service.start(h.agents, auth, c.agent_instance_id, {if_live=.Keep, guard=guard, guard_ctx=guard_ctx})
+ inst, kept, started, start_err := agent_service.ensure_running(h.agents, auth, c.agent_instance_id, reason, guard_ctx, guard)
  if !started do return false, start_err
  defer domain.agent_instance_destroy(&inst)
  if !kept do publish_instance_changed(h.event_bus, inst, "status_changed")

@@ -1565,7 +1565,7 @@ action_agent_create :: proc(ctx:rawptr,owner,agent_id,project_id:string,c:placem
 action_agent_stop :: proc(ctx:rawptr,owner,instance_id:string) {
  graph:=(^App_Graph)(ctx)
  context.allocator=context.temp_allocator
- row,ok,err:=agent_service.stop_instance_confirmed(&graph.agents,{kind=.Internal_User,user_id=owner},instance_id,{reason="action_fresh_per_run"})
+ row,ok,err:=agent_service.stop_instance_confirmed(&graph.agents,{kind=.Internal_User,user_id=owner},instance_id,{reason=agent_service.STOP_ACTION_FRESH_PER_RUN})
  defer domain.agent_instance_destroy(&row)
  if !ok do fmt.eprintf("action stop %s: %s\n",instance_id,err.message)
 }

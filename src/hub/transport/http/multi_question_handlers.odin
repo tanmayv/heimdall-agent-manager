@@ -42,7 +42,7 @@ answer_chat_questions_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		// Wake stopped agents through the same lifecycle path as normal sends.
 		// A restart failure must not turn a committed answer into a failed submit;
 		// its durable inbox record remains available to the next instance wake.
-		_, _ = restart_stopped_conversation_instance(h, auth, cid)
+		_, _ = restart_stopped_conversation_instance(h, auth, cid, .User_Message)
 	}
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"message\":")

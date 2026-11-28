@@ -151,11 +151,11 @@ effect_wake_lease :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease, task
  remove_stop(u, key, entry.agent_instance_id)
 }
 
-Lease_Stop :: struct { instance_id, reason: string, run_count: int }
+Lease_Stop :: struct { instance_id: string, reason: agent.Stop_Reason, run_count: int }
 
 // effect_stop queues a stop for this exact instance generation.
 // Callers exclude coordinators before recording a stop intent.
-effect_stop :: proc(u: ^Uow, inst: domain.Agent_Instance, chain_id, reason: string) {
+effect_stop :: proc(u: ^Uow, inst: domain.Agent_Instance, chain_id: string, reason: agent.Stop_Reason) {
 	bridge_id, instance_id := inst.bridge_id, inst.agent_instance_id
 	if u == nil || bridge_id == "" || instance_id == "" do return
 	key := effects_key(&u.effects, bridge_id, chain_id)

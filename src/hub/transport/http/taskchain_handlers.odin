@@ -1452,7 +1452,7 @@ create_chain_with_prepared_coordinator :: proc(h: ^Taskchain_Handlers, auth_ctx:
 	input.chain_id = string(chain.chain_id)
 	inst, prepared, prepare_err := agent_service.create_instance_stopped(h.agents, auth_ctx, input)
 	if !prepared do return {}, {}, prepare_err
-	ticket, err = agent_service.start_begin(h.agents, auth_ctx, inst.agent_instance_id, {if_live=.Refuse})
+	ticket, err = agent_service.start_begin(h.agents, auth_ctx, inst.agent_instance_id, {if_live=.Refuse, reason=.Chain_Create})
 	domain.agent_instance_destroy(&inst)
 	if err.code != .None do return {}, ticket, err
 	committed, commit_err := iface.unit_of_work_commit(&uow)

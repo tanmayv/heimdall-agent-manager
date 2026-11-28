@@ -14,7 +14,7 @@ task_stop_command_id :: proc(instance_id: string, run_count: int) -> string {
 	return fmt.aprintf("%s%d_%s", TASK_STOP_COMMAND_PREFIX, run_count, instance_id)
 }
 
-task_stop_command :: proc(bridge_id, instance_id, reason: string, run_count: int) -> project.Runtime_Command {
+task_stop_command :: proc(bridge_id, instance_id: string, reason: Stop_Reason, run_count: int) -> project.Runtime_Command {
 	id := task_stop_command_id(instance_id, run_count)
 	return {bridge_id = bridge_id, command_id = id, body_json = stop_command_json(id, instance_id, reason, expected_run_count = run_count)}
 }

@@ -67,7 +67,7 @@ mcp_create_chain :: proc(ctx:rawptr,raw:string,view:mcp.Access_View,args:mcp.Con
 	if !valid || !mcp.access_same(view,fresh) {
 		return string(chain.chain_id),inst.agent_instance_id,"coordinator_launch_not_dispatched"
 	}
-	if _,_,sent,_:=agent.start(&g.agents,principal,inst.agent_instance_id,{if_live=.Refuse});!sent {
+	if _,_,sent,_:=agent.start(&g.agents,principal,inst.agent_instance_id,{if_live=.Refuse,reason=.Chain_Create});!sent {
 		return string(chain.chain_id),inst.agent_instance_id,"coordinator_launch_unconfirmed"
 	}
 	return string(chain.chain_id),inst.agent_instance_id,""
